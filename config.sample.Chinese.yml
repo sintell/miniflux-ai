@@ -10,6 +10,13 @@ miniflux:
   base_url: http://miniflux:8080
   browser_url: https://your.server.com
   api_key: ${MINIFLUX_API_KEY}
+  enrichment_mode: legacy_content # metadata requires the Miniflux fork; see docs/metadata.md
+  timeout: 30
+  retries: 2
+
+metadata:
+  relevance_criteria: ${MINIFLUX_AI_RELEVANCE_CRITERIA:-} # Required personal policy in metadata mode
+  input_fields: []
 
 llm:
   provider: openai

@@ -12,6 +12,8 @@ This project integrates with Miniflux to fetch RSS feed content via API or webho
   [NAS/Portainer migration, Docker Hub publishing, and rollback](docs/nas-deployment.md).
 
 - **Miniflux Integration**: Seamlessly fetch unread entries from Miniflux or trigger via webhook.
+- **Native metadata enrichment**: Optional fork integration stores relevance, summaries,
+  and topics without changing publisher content. See [metadata configuration and rollout](docs/metadata.md).
 - **Schedule Interval**: Specifies the time interval for requesting the miniflux api.
 - **LLM Processing**: Generate summaries, translations, etc. based on your chosen LLM agent.
 - **AI News**: Use the LLM agent to generate AI morning and evening news from feed content.
@@ -95,7 +97,9 @@ sudo docker compose up -d
 
 1. Ensure `config.yml` is properly configured.
 2. Run the script: `python main.py`
-3. The script will fetch unread RSS entries, process them with the LLM, and update the content in Miniflux.
+3. The script fetches unread RSS entries and processes them with the LLM. Explicit
+   `legacy_content` mode updates content; `metadata` mode writes producer metadata
+   and requires the metadata-enabled Miniflux fork plus your personal rating criteria.
 
 ## Roadmap
 - [x] Add daily summary(by title, Summary of existing AI)

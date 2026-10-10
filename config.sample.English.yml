@@ -9,7 +9,16 @@ miniflux:
   browser_url: https://rss.home.antki.dev # User-facing article links
   api_key: ${MINIFLUX_API_KEY}
   schedule_interval: 15 # Polling interval in minutes
+  enrichment_mode: legacy_content # Set metadata ONLY after the Miniflux fork is available
+  timeout: 30 # Per-attempt API timeout in seconds
+  retries: 2 # Bounded transport/429/temporary-5xx retries
   # webhook_secret: ${MINIFLUX_WEBHOOK_SECRET}
+
+metadata:
+  # Required in metadata mode: supply YOUR personal rating criteria (no default policy).
+  relevance_criteria: ${MINIFLUX_AI_RELEVANCE_CRITERIA:-}
+  input_fields: [] # Explicit registered client.field names; no wildcard or automatic other-app input
+  # See docs/metadata.md for producer contracts and staged rollout.
 
 llm:
   provider: openai # openai or gemini
