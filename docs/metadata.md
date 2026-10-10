@@ -57,6 +57,97 @@ content injection. `ai_news.prompts.article` still controls the summary brief;
 the producer appends its strict JSON/rating/topics contract. The process-wide
 language policy and LLM concurrency/RPM/retry budgets still apply.
 
+## Rule-aware article text for thin feeds
+
+Metadata enrichment retrieves original-article content before generation when
+feed text is thin. Hacker News and other link feeds often supply only a title,
+article URL, comments URL and counters. The model has no browsing tool; the
+companion supplies article text through Miniflux's own extraction pipeline.
+
+```yaml
+article_fetch:
+  mode: thin # "off", thin, or always; default thin
+  min_feed_chars: 500
+  min_article_chars: 200
+  timeout: 30
+  max_bytes: 2097152
+  max_text_chars: 20000
+  retries: 1
+```
+
+`thin` reuses stored content when it already contains sufficient visible text.
+The length check excludes link-only anchors and HN-style Article URL, Comments
+URL, Points and comment-count paragraphs. `always` requests a preview for every
+otherwise eligible new enrichment; `"off"` uses stored content only. This applies
+to metadata mode and preserves the intentional legacy-content path.
+
+The preview request is explicitly read-only:
+
+```http
+GET /v1/entries/123/fetch-content?update_content=false
+```
+
+The inspected server handler loads the entry's feed and user, then uses the same
+`ProcessEntryWebPage` pipeline as Miniflux's Fetch original content action:
+feed-specific scraper rules, URL rewrites, built-in extraction rules, content
+rewrites, configured user agent/cookies/proxy/TLS settings, and sanitizer. It
+persists title/content only when `update_content=true`, which this client never
+sends. Reading time is returned for the preview, without changing stored entry
+fields or `changed_at`. The companion does not copy feed rule implementations,
+cookies/passwords/proxy settings into Python or send them to the model.
+
+This gives matching extraction semantics, not a promise of byte-identical content
+across different fetch times. HTML is converted to Markdown and bounded for model
+input. If Miniflux already fetched full content during normal feed ingestion
+(`crawler` enabled), `thin` normally uses the stored content directly. Enabling
+feed crawling or changing its rules is a separate Miniflux feed-setting decision.
+
+Publisher fetching, redirects, network access and TLS policies remain controlled
+by Miniflux. The companion bounds the preview API timeout, decoded JSON response
+size and extracted-text budget, and retries transport/429/5xx failures according
+to its bounded API policy. It does not crawl references/comments or add browser,
+JavaScript or PDF processing capabilities beyond Miniflux's existing scraper.
+An error or insufficient preview text prevents generation and completion/digest
+enqueue. This also catches the server returning the original thin content after
+an empty extraction. Unread entries remain eligible for a later ordinary poll.
+
+Generation receives preview text as primary `content`, `source.kind:
+miniflux_article` with the native entry URL/truncation flag, and compact original
+`feed_content` for context. Original title, native tags and selected metadata
+keep their roles. The prompt prioritizes article evidence over wrapper counters,
+and personal relevance remains tied to configured criteria rather than article
+availability. `max_text_chars` and `llm.max_length` bound the excerpt, with explicit
+truncation context. Summary language and strict JSON/rating validation still apply.
+
+Publisher fields, native entry URLs/IDs and existing digest source links remain
+unchanged. Saved validated results retry metadata persistence without refetching
+or regenerating. Existing completed enrichments—including old stub summaries—
+are not automatically revisited or reset.
+
+This feature requires companion version 1.1.2 or newer; published 1.1.1
+ignores `article_fetch`. Mocked tests cover read-only request parameters, limits
+and retries; isolated real-fork tests exercise scraper/rewrite rules and unchanged
+stored fields. All generation is mocked; development verification modifies no
+production article/queue and consumes no paid LLM requests.
+
+## Discovery interval and publisher quotations
+
+`miniflux.schedule_interval` is measured in **minutes**, not seconds. Set it to
+`1` for one-minute discovery; `60` means hourly. The worker checks immediately
+on startup and skips scheduled checks while its previous discovery pass is still
+running. Restart the worker after changing its configuration.
+
+Ordinary discovery selects unread entries only. Marking an article read before
+discovery can prevent enrichment; saved pending results still retry independently
+of read status. Completed metadata is not regenerated on subsequent polls.
+
+Starting with 1.1.2, metadata selection accepts publisher content beginning with
+`<blockquote>`, even when an agent has `style_block: true`. That generic prefix is
+only an old legacy-content heuristic, not proof of metadata completion. Explicit
+legacy markers, configured title prefixes, allow/deny rules, internal-feed
+exclusions, local completion records and complete metadata assignments still
+apply.
+
 ## LLM endpoint and failure diagnostics
 
 `llm.api` explicitly selects `chat_completions` (default) or `responses` for the
