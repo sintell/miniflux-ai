@@ -5,6 +5,12 @@ This project integrates with Miniflux to fetch RSS feed content via API or webho
 
 ## Features
 
+- **Personal digest**: Configurable output language and editorial length, validated
+  article links, merged source coverage, optional forecast-aware creative openings,
+  and persistent SQLite-backed editions.
+- **Deployment guide**: [Configuration and behavior](docs/personal-digest.md) ·
+  [NAS/Portainer migration, Docker Hub publishing, and rollback](docs/nas-deployment.md).
+
 - **Miniflux Integration**: Seamlessly fetch unread entries from Miniflux or trigger via webhook.
 - **Schedule Interval**: Specifies the time interval for requesting the miniflux api.
 - **LLM Processing**: Generate summaries, translations, etc. based on your chosen LLM agent.
@@ -48,7 +54,10 @@ This project integrates with Miniflux to fetch RSS feed content via API or webho
 
 ## Configuration
 
-The repository includes a template configuration file: `config.sample.yml`. Modify the `config.yml` to set up:
+Copy `config.sample.English.yml` or `config.sample.Chinese.yml` to `config.yml` and
+adapt the existing settings. YAML values support `${ENV_VAR}` and
+`${ENV_VAR:-default}`. Supply Miniflux and LLM API keys separately through the
+container environment; do not commit real credentials.
 
 > If using a webhook, enter the URL in Settings > Integrations > Webhook > Webhook URL.
 > 
@@ -56,35 +65,30 @@ The repository includes a template configuration file: `config.sample.yml`. Modi
 > http://miniflux_ai/api/miniflux-ai.
 
 - **Miniflux**: Base URL and API key.
-- **LLM**: Model settings, API key, and endpoint.Add timeout, max_workers parameters due to multithreading
-- **AI News**: Schedule and prompts for daily news generation
-- **Agents**: Define each agent's prompt, allow_list/deny_list filters, and output style（`style_block` parameter controls whether the output is formatted as a code block in Markdown）.
+- **LLM**: Model, endpoint, per-attempt timeout, shared concurrent-request limit,
+  request-per-minute budget and bounded retries.
+- **AI News**: Language, timezone, schedule, editorial limits, prompts and optional weather.
+- **Agents**: Define prompts and allow/deny filters; `style_block` wraps generated
+  text in a blockquote. The summary agent uses `ai_news.prompts.article`.
 
 
 ## Docker Setup
 
-The project includes a `docker-compose.yml` file for easy deployment:
+The existing `docker-compose.yml` runs the AI application on the external
+`reverse_proxy` network alongside your existing Miniflux and LLM gateway. Set
+`MINIFLUX_AI_IMAGE` to the fork's versioned Docker Hub image and
+`MINIFLUX_AI_DIRECTORY` to the directory containing `config.yml` and `data/`.
 
-> If using webhook or AI news, it is recommended to use the same docker-compose.yml with miniflux and access it via container name.
+`config.yml` is mounted read-only. Mount the whole `data/` directory for SQLite,
+locks and `feeds_status.json`. Before upgrading an existing deployment, follow the
+[backup and JSON migration steps](docs/nas-deployment.md); do not recreate the old
+container before recovering its unmounted state files. `FLASK_PORT` defaults to 80
+and is configurable through the environment.
 
-```yaml
-services:
-    miniflux_ai:
-        container_name: miniflux_ai
-        image: ghcr.io/qetesh/miniflux-ai:latest
-        restart: always
-        environment:
-            TZ: Asia/Shanghai
-        volumes:
-            - ./config.yml:/app/config.yml
-            # - ./entries.json:/app/entries.json # Provide persistent for AI news
-
-```
-Refer to `config.sample.*.yml`, create `config.yml`
-To start the services:
+After configuring credentials, timezone and image, start a shell-managed stack:
 
 ```bash
-docker-compose up -d
+sudo docker compose up -d
 ```
 
 ## Usage

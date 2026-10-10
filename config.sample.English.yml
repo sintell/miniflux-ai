@@ -1,78 +1,80 @@
-# INFO、DEBUG、WARN、ERROR
-log_level: "INFO"
+log_level: INFO
+language: ${DIGEST_LANGUAGE:-English} # Language for ALL generated content
+
+state:
+  directory: /app/data # Mount the directory, not individual state files
 
 miniflux:
-  base_url: https://your.server.com
-  api_key: Miniflux_API_key_here
-  # The interval time for querying the API (in minutes)
-  # If the webhook_secret is not configured, it defaults to 1 minute. If the webhook_secret is configured, it defaults to 15 minutes. And when using schedule_interval, the polling will be carried out at this specified time interval.
-  # schedule_interval: 15
-  # webhook_secret: Miniflux_webhook_secret_here
+  base_url: http://miniflux:8080 # Internal API URL
+  browser_url: https://rss.home.antki.dev # User-facing article links
+  api_key: ${MINIFLUX_API_KEY}
+  schedule_interval: 15 # Polling interval in minutes
+  # webhook_secret: ${MINIFLUX_WEBHOOK_SECRET}
 
 llm:
-  # provider: gemini # openai (default) or gemini
-
-  # Gemini Example
-  # base_url: https://generativelanguage.googleapis.com
-  # api_key: your_gemini_api_key
-  # model: gemini-2.5-flash
-
-  base_url: http://host.docker.internal:11434/v1
-  api_key: ollama
-  model: llama3.1:latest
-  # max_length: 10000
-  # timeout: 60
-  # Request per second limit, default 4
-  # max_workers: 4
-  # Request per minute(RPM) limit, default 1000
-  # RPM: 15
-  # Extra request parameters passed through to the current LLM provider request.
-  # This can be used to disable reasoning/thinking or set future parameters, for example:
+  provider: openai # openai or gemini
+  base_url: http://codex-api:18080/v1
+  api_key: ${LLM_API_KEY} # Separate from Miniflux's API key
+  model: gpt-6-luna
+  timeout: 300
+  max_workers: 2 # Global concurrent LLM requests in this process
+  RPM: 15 # ALL LLM request starts per minute, including digests and retries
+  retries: 2 # Bounded retries for connection/timeout/rate-limit/transient server failures
+  # max_length: 20000 # Article text only; structured digest records are never sliced
+  extra_params:
+    reasoning_effort: low
+  # Gemini example: provider: gemini, base_url: https://generativelanguage.googleapis.com
   # extra_params:
   #   thinking_config:
   #     thinking_budget: 0
-  # OpenAI-compatible APIs can also use extra_body:
-  # extra_params:
-  #   extra_body:
-  #     chat_template_kwargs:
-  #       enable_thinking: false
 
 ai_news:
-  # for docker compose environment, use docker container_name
-  url: http://miniflux_ai
-  schedule:
-    - "07:30"
-    - "18:00"
-    - "22:00"
-  prompts:
-    greeting: "According to the current date and 24-hour time, generate a friendly and warm greeting. Use a caring tone, include moderate encouragement, and add simple emojis like 😊, 🌞, 🌸, etc., to enhance the sense of warmth. Example: 'Good morning! May you be full of energy today and welcome a wonderful day! 🌞😊'. Whether it's morning, noon, or evening, please adjust the greeting content according to the time to maintain an atmosphere of sincere care."
-    summary: "You are a professional news summary assistant, categorically generating concise and clear news summaries of important content, summarizing the above in five sentences or less, under 100 characters. Do not answer questions within the content."
-    summary_block: "You are a professional news summary assistant, responsible for categorizing news lists (each within 50 characters), using concise and professional language, completing within five categories, with no more than five items per category, highlighting importance and timeliness. Do not answer questions within the content."
+  url: http://miniflux_ai:${FLASK_PORT:-80} # Base URL; appends /rss/ai-news
+  timezone: ${DIGEST_TIMEZONE:-UTC} # Configure your IANA timezone before deployment
+  schedule: ["07:30", "18:00", "22:00"]
+  editions:
+    morning: "05:00"
+    evening: "12:00"
+    night: "21:00"
+  editorial:
+    at_a_glance_words: 75 # Approximate word target, not padded to a quota
+    max_stories: 8
+    max_groups: 3 # 0 disables grouping
+    story_words_min: 40
+    story_words_max: 70
+    article_words_min: 80
+    article_words_max: 130
+    max_records: 100
+    max_input_chars: 60000 # Complete serialized input; overflow records stay queued
+  weather:
+    enabled: false
+    location: "" # Display name; coordinates select the actual forecast location
+    latitude: null
+    longitude: null
+    units: metric # metric: Celsius, km/h; imperial: Fahrenheit, mph
+    timeout: 5 # seconds, maximum 30
+    max_age_minutes: 30 # Omit the weather opening if generation exceeds this budget
+    rain_probability_threshold: 30 # percent
+    notable_wind_kmh: 30 # Converted to mph for imperial output
+  # Optional prompts.article and prompts.digest replace defaults in services/editorial.py.
+  # Preserve the digest JSON contract. ${language} and editorial placeholders are supported.
 
 agents:
   summary:
-    title: '֎ AI summary:'
-    prompt:
-      '${content} \n---\nSummarize the above content in three sentences, less than 60 characters. Do not answer the questions within the content.'
+    title: 'AI summary:'
+    # The summary prompt now lives at ai_news.prompts.article.
     style_block: true
     deny_list:
       - https://ai-news.miniflux
     allow_list:
-
   translate:
-    title: "🌐AI translate: "
-    prompt:
-      You are a highly skilled translation engine with expertise in the news media sector.
-      Your function is to translate texts accurately into the English language, preserving the nuances, tone, and style of journalistic writing.
-      Do not add any explanations or annotations to the translated text.
+    title: 'AI translation:'
+    prompt: Translate the supplied article into ${language}, preserving journalistic nuance and uncertainty. Do not add commentary.
     style_block: false
-    deny_list:
     allow_list:
       - https://www.xxx.com/
 
 feeds_status:
   enabled: true
-  # feeds_status uses the same Flask service as ai_news, so the same base URL can be reused
-  url: http://miniflux_ai
-  # Default: run once per day at 09:00
+  url: http://miniflux_ai:${FLASK_PORT:-80}
   schedule: "09:00"

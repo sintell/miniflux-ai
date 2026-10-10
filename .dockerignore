@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+**/__pycache__
+config.yml
+entries.json
+ai_news.json
+feeds_status.json
+data
+backups
+*.sqlite3*
+.env
+tests

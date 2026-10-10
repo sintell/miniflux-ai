@@ -113,6 +113,16 @@ ai_news:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 self.Config()
 
+    def test_existing_samples_load_with_container_environment(self):
+        root = Path(__file__).resolve().parents[1]
+        for name, language in (('English', 'English'), ('Chinese', 'Chinese')):
+            self.write_config((root / f'config.sample.{name}.yml').read_text(encoding='utf-8'))
+            with patch.dict(os.environ, {'MINIFLUX_API_KEY': 'test-only', 'LLM_API_KEY': 'test-only'}, clear=True):
+                config = self.Config()
+            self.assertEqual(config.language, language)
+            self.assertEqual(config.ai_news_url, 'http://miniflux_ai')
+            self.assertEqual(config.flask_port, 80)
+
 
 if __name__ == "__main__":
     unittest.main()

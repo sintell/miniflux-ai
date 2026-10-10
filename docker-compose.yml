@@ -1,39 +1,23 @@
+# Miniflux and the LLM gateway are existing services on reverse_proxy.
 services:
-  miniflux:
-    image: miniflux/miniflux:latest
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "80:8080"
-    environment:
-      - DATABASE_URL=postgres://miniflux:secret@db/miniflux?sslmode=disable
-      - RUN_MIGRATIONS=1
-      - CREATE_ADMIN=1
-      - ADMIN_USERNAME=admin
-      - ADMIN_PASSWORD=test123
-    restart: unless-stopped
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      - POSTGRES_USER=miniflux
-      - POSTGRES_PASSWORD=secret
-      - POSTGRES_DB=miniflux
-    volumes:
-      - miniflux-db:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "miniflux"]
-      interval: 10s
-      start_period: 30s
-    restart: unless-stopped
-
-  # miniflux-ai
   miniflux_ai:
     container_name: miniflux_ai
-    image: ghcr.io/qetesh/miniflux-ai:latest
+    image: ${MINIFLUX_AI_IMAGE:?Set Docker Hub namespace/repository:version or an image digest}
     restart: unless-stopped
     environment:
-        TZ: Asia/Shanghai
+      MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:?Set the separate Miniflux API key}
+      LLM_API_KEY: ${LLM_API_KEY:?Set the local gateway API key}
+      DIGEST_LANGUAGE: ${DIGEST_LANGUAGE:-English}
+      DIGEST_TIMEZONE: ${DIGEST_TIMEZONE:-UTC}
+      FLASK_PORT: ${FLASK_PORT:-80}
     volumes:
-        - ./config.yml:/app/config.yml
-        # - ./entries.json:/app/entries.json # Provide persistent for AI news
+      - ${MINIFLUX_AI_DIRECTORY:-.}/config.yml:/app/config.yml:ro
+      - ${MINIFLUX_AI_DIRECTORY:-.}/data:/app/data
+    networks:
+      - reverse_proxy
+    # Enable only after checking image compatibility and data ownership:
+    # user: "1000:10"
+
+networks:
+  reverse_proxy:
+    external: true

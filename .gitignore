@@ -169,3 +169,6 @@ ai_news.json
 img.png
 /feeds_status.json
 /temp.md
+/data/
+/backups/
+*.sqlite3*

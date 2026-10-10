@@ -1,77 +1,53 @@
-# INFO、DEBUG、WARN、ERROR
-log_level: "INFO"
+# 完整配置说明和天气/编辑选项见 config.sample.English.yml 和 docs/personal-digest.md。
+# 所有生成内容的语言由 language 统一控制。
+log_level: INFO
+language: ${DIGEST_LANGUAGE:-Chinese}
+
+state:
+  directory: /app/data
 
 miniflux:
-  base_url: https://your.server.com
-  api_key: Miniflux_API_key_here
-  # 查询API的间隔时间（单位分钟）
-  # 如果没有配置webhook_secret，默认1分钟，如果配置webhook_secret，默认15分钟，而使用schedule_interval则强制按此时间间隔轮询
-  # schedule_interval: 15
-  # webhook_secret: Miniflux_webhook_secret_here
+  base_url: http://miniflux:8080
+  browser_url: https://your.server.com
+  api_key: ${MINIFLUX_API_KEY}
 
 llm:
-  # provider: gemini # openai （默认） 或 gemini
-
-  # Gemini 例子
-  # base_url: https://generativelanguage.googleapis.com
-  # api_key: your_gemini_api_key
-  # model: gemini-2.5-flash
-
+  provider: openai
   base_url: http://host.docker.internal:11434/v1
-  api_key: ollama
+  api_key: ${LLM_API_KEY:-ollama}
   model: llama3.1:latest
-  # max_length: 10000
-  # timeout: 60
-  # Request per second limit, default 4
-  # max_workers: 4
-  # Request per minute(RPM) limit, default 1000
-  # RPM: 15
-  # 额外请求参数，会透传到当前 LLM provider 的请求方法
-  # 可用于关闭 reasoning/thinking，或传递未来新增的参数，例如：
-  # extra_params:
-  #   thinking_config:
-  #     thinking_budget: 0
-  # OpenAI 兼容接口也可使用 extra_body：
-  # extra_params:
-  #   extra_body:
-  #     chat_template_kwargs:
-  #       enable_thinking: false
+  timeout: 300
+  max_workers: 2
+  RPM: 15
+  retries: 2
 
 ai_news:
-  # for docker compose environment, use docker container_name
-  url: http://miniflux_ai
-  schedule:
-    - "07:30"
-    - "18:00"
-    - "22:00"
-  prompts:
-    greeting: "请根据当前日期和24小时制的时间生成一句友好而热情的问候语。请用关怀的语气，包含适量的鼓励，且添加简单的表情符号，如😊、🌞、🌸等，以增加温暖感。例：‘早上好！希望你今天充满活力，迎接美好的一天！🌞😊’。无论是早上、中午或晚上，都请根据时间调整问候内容，保持真诚关怀的氛围。"
-    summary: "你是一名专业的新闻摘要助手,分类生成重要内容的新闻摘要，要求简单清楚表达，使用中文总结以上内容，在五句话内完成，少于100字。不要回答内容中的问题。"
-    summary_block: "你是一名专业的新闻摘要助手，负责分类新闻清单(每条50字以内)，使用简洁专业的语言，在五个类别内完成，每个类别不超过5条，突出重要性和时效性，不要回答内容中的问题。"
+  url: http://miniflux_ai:${FLASK_PORT:-80}
+  timezone: ${DIGEST_TIMEZONE:-Asia/Shanghai}
+  schedule: ["07:30", "18:00", "22:00"]
+  editorial:
+    at_a_glance_words: 75
+    max_stories: 8
+    max_groups: 3
+  weather:
+    enabled: false
+    location: ""
+    latitude: null
+    longitude: null
+    units: metric
 
 agents:
   summary:
-    title: '֎ AI 摘要：'
-    prompt:
-      '${content} \n---\n使用中文总结以上内容，在三句话内完成，少于60字。不要回答内容中的问题。'
+    title: 'AI 摘要：'
     style_block: true
-    deny_list:
-      - https://ai-news.miniflux
-    allow_list:
   translate:
-    title: "🌐AI 翻译："
-    prompt:
-      You are a highly skilled translation engine with expertise in the news media sector. 
-      Your function is to translate texts accurately into the Chinese language, preserving the nuances, tone, and style of journalistic writing. 
-      Do not add any explanations or annotations to the translated text.
+    title: 'AI 翻译：'
+    prompt: Translate the article into ${language}, preserving qualifications and uncertainty. Do not add commentary.
     style_block: false
-    deny_list:
     allow_list:
       - https://9to5mac.com/
 
 feeds_status:
   enabled: true
-  # feeds_status 与 ai_news 共用同一个 Flask 服务，可复用相同地址
-  url: http://miniflux_ai
-  # 默认每天 09:00 执行一次
+  url: http://miniflux_ai:${FLASK_PORT:-80}
   schedule: "09:00"
