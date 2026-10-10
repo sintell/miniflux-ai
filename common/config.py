@@ -133,6 +133,32 @@ class Config:
         if not isinstance(self.llm_extra_params, dict):
             raise ValueError('llm.extra_params must be a mapping')
 
+        from services.article_source import DEFAULTS as ARTICLE_FETCH_DEFAULTS
+        self.article_fetch = dict(ARTICLE_FETCH_DEFAULTS)
+        fetch_options = self.c.get('article_fetch') or {}
+        if not isinstance(fetch_options, dict) or set(fetch_options) - set(self.article_fetch):
+            raise ValueError('article_fetch must contain only documented retrieval options')
+        self.article_fetch.update(fetch_options)
+        # PyYAML's YAML 1.1 resolver parses an unquoted `off` as false.
+        if self.article_fetch['mode'] is False:
+            self.article_fetch['mode'] = 'off'
+        if self.article_fetch['mode'] not in ('off', 'thin', 'always'):
+            raise ValueError('article_fetch.mode must be off, thin or always')
+        bounds = {'min_feed_chars': (1, 10000), 'min_article_chars': (1, 10000),
+                  'max_bytes': (1024, 8 * 1024 * 1024), 'max_text_chars': (1, 100000),
+                  'retries': (0, 3)}
+        for name, (minimum, maximum) in bounds.items():
+            value = typed_value(self.article_fetch[name], ARTICLE_FETCH_DEFAULTS[name])
+            self.article_fetch[name] = value
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValueError(f'article_fetch.{name} must be an integer from {minimum} to {maximum}')
+        timeout = typed_value(self.article_fetch['timeout'], 1.0)
+        self.article_fetch['timeout'] = timeout
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or not 0 < timeout <= 30:
+            raise ValueError('article_fetch.timeout must be positive and at most 30 seconds')
+        if self.article_fetch['max_text_chars'] < self.article_fetch['min_article_chars']:
+            raise ValueError('article_fetch.max_text_chars must cover min_article_chars')
+
         self.ai_news_url = canonical_url(self.get_config_value('ai_news', 'url', None))
         self.ai_news_schedule = self.get_config_value('ai_news', 'schedule', None)
         self.ai_news_prompts = self.get_config_value('ai_news', 'prompts', None)

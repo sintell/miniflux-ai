@@ -8,6 +8,7 @@ from services.editorial import expand_prompt, GenerationError
 from services.enrichment import enrichment_prompt, generation_input, validate_enrichment
 from services.miniflux_client import MetadataAPIError, OUTPUT_FIELDS
 from services.state import State
+from services.article_source import linked_source
 
 
 def process_entry(miniflux_client, entry, config=None):
@@ -84,12 +85,16 @@ def process_metadata_entry(client, entry, config, state):
             if all(field in entry.get('meta', {}) for field in OUTPUT_FIELDS):
                 return
             client.verify_metadata_write(entry_id)
+            stage = 'fetch_source'
+            source = linked_source(client, entry, config)
+            request = generation_input(entry, config, source)
             stage = 'llm'
-            response = get_ai_result(enrichment_prompt(config), generation_input(entry, config), structured=True)
+            response = get_ai_result(enrichment_prompt(config), request, structured=True)
             stage = 'validation'
             values = validate_enrichment(response, entry.get('tags') or [])
             stage = 'save_result'
-            saved = state.save_enrichment(entry_id, values, source_record(entry, values['summary']))
+            record = source_record(entry, values['summary'])
+            saved = state.save_enrichment(entry_id, values, record)
         stage = 'patch_metadata'
         client.verify_metadata_write(entry_id)
         client.patch_metadata(entry_id, saved['values'])

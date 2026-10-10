@@ -20,6 +20,15 @@ metadata:
   input_fields: [] # Explicit registered client.field names; no wildcard or automatic other-app input
   # See docs/metadata.md for producer contracts and staged rollout.
 
+article_fetch: # Metadata mode: read-only Miniflux preview using the feed's own rules
+  mode: thin # "off", thin, or always; reuse stored content when already substantive
+  min_feed_chars: 500 # Ignore link/counter wrappers when assessing feed text
+  min_article_chars: 200 # Fail before generation if retrieval has too little readable text
+  timeout: 30 # API timeout per attempt; publisher HTTP/redirect settings belong to Miniflux
+  max_bytes: 2097152 # 2 MiB preview JSON response cap
+  max_text_chars: 20000 # Retrieved excerpt; llm.max_length can impose a smaller limit
+  retries: 1 # Temporary HTTP/transport failures only
+
 llm:
   provider: openai # openai or gemini
   api: chat_completions # Explicit openai API: chat_completions (default) or responses

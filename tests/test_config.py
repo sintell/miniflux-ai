@@ -52,6 +52,24 @@ class ConfigTestCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'structured_output'):
             self.Config()
 
+    def test_article_fetch_defaults_and_explicit_options(self):
+        self.write_config('{}')
+        self.assertEqual(self.Config().article_fetch['mode'], 'thin')
+        self.write_config('article_fetch:\n  mode: always\n  timeout: 5\n  max_text_chars: 1000\n')
+        self.assertEqual(self.Config().article_fetch['timeout'], 5)
+        self.write_config('article_fetch:\n  mode: off\n')
+        self.assertEqual(self.Config().article_fetch['mode'], 'off')
+
+    def test_invalid_article_fetch_settings(self):
+        for content in ('article_fetch: all', 'article_fetch:\n  mode: auto',
+                        'article_fetch:\n  timeout: 31', 'article_fetch:\n  timeout: .nan',
+                        'article_fetch:\n  max_bytes: 99999999', 'article_fetch:\n  retries: 4',
+                        'article_fetch:\n  min_feed_chars: -1', 'article_fetch:\n  max_text_chars: 100',
+                        'article_fetch:\n  unknown: 1'):
+            self.write_config(content)
+            with self.assertRaises(ValueError):
+                self.Config()
+
     def test_extra_params_accepts_nested_mapping(self):
         self.write_config(
             "llm:\n"

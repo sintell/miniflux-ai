@@ -40,6 +40,7 @@ class MetadataAPIError(RuntimeError):
             'access': 'Check the Miniflux user and entry access.',
             'entry_not_found': 'Entry was deleted or is inaccessible; enrichment is not complete.',
             'invalid_response': 'Expected the metadata fork API contract; check the Miniflux URL and version.',
+            'response_too_large': 'Increase article_fetch.max_bytes only if appropriate for this preview response.',
         }.get(self.category, 'Saved work is retained; temporary failures use bounded backoff.')
         super().__init__(f'operation={operation} entry_id={entry_id} fields={",".join(fields)} '
                          f'http_status={status} retryable={self.retryable} category={self.category}. {advice}')
@@ -57,26 +58,35 @@ class Client(miniflux.Client):
         self._write_verified = False
 
     def _request(self, method, path, operation, *, expected=(200,), entry_id=None,
-                 fields=(), capability=False, **kwargs):
+                 fields=(), capability=False, request_timeout=None, retries=None,
+                 max_response_bytes=None, **kwargs):
         error = None
-        for attempt in range(self.retries + 1):
+        attempts = self.retries if retries is None else retries
+        for attempt in range(attempts + 1):
+            response = None
             try:
-                response = self._session.request(method, self._get_endpoint(path), timeout=self._timeout,
-                                                 allow_redirects=False, **kwargs)
-            except requests.RequestException:
-                error = MetadataAPIError(operation, entry_id=entry_id, fields=fields, category='transport')
-            else:
+                response = self._session.request(method, self._get_endpoint(path),
+                                                 timeout=self._timeout if request_timeout is None else request_timeout,
+                                                 allow_redirects=False, stream=max_response_bytes is not None, **kwargs)
                 status = response.status_code
                 if status in expected:
                     if status == 204:
                         return None
                     try:
+                        if max_response_bytes is not None:
+                            body = bytearray()
+                            for chunk in response.iter_content(chunk_size=65536):
+                                body.extend(chunk)
+                                if len(body) > max_response_bytes:
+                                    raise MetadataAPIError(operation, status, entry_id=entry_id,
+                                                           category='response_too_large')
+                            return json.loads(body)
                         return response.json()
                     except ValueError:
                         raise MetadataAPIError(operation, status, entry_id=entry_id, fields=fields,
                                                category='invalid_response') from None
                 category = 'incompatible' if capability and status in (404, 405, 501) else None
-                if status == 400:
+                if status == 400 and operation != 'fetch_content':
                     # Categorize the normal error shape, never echo arbitrary server text.
                     try:
                         message = response.json().get('error_message', '')
@@ -85,8 +95,14 @@ class Client(miniflux.Client):
                     if isinstance(message, str) and 'is not registered' in message:
                         category = 'unregistered_field'
                 error = MetadataAPIError(operation, status, entry_id=entry_id, fields=fields, category=category)
-            if not error.retryable or attempt == self.retries:
-                self._ready_until = 0
+            except requests.RequestException:
+                error = MetadataAPIError(operation, entry_id=entry_id, fields=fields, category='transport')
+            finally:
+                if response is not None:
+                    response.close()
+            if not error.retryable or attempt == attempts:
+                if operation != 'fetch_content':
+                    self._ready_until = 0
                 if operation in ('patch_metadata', 'verify_write') and error.category not in ('entry_not_found', 'unregistered_field'):
                     # Stop new generation while persistence is known unavailable.
                     # Already-running generation can still finish into the outbox.
@@ -94,6 +110,16 @@ class Client(miniflux.Client):
                     self._error_until = time.monotonic() + 30
                 raise error from None
             time.sleep(min(2 ** (attempt + 1), 30))
+
+    def fetch_entry_content(self, entry_id, *, timeout=30, retries=1, max_bytes=2 * 1024 * 1024):
+        # Unlike the reader's persisting action, this explicit preview never
+        # updates stored title/content. Miniflux applies the owning feed's rules.
+        result = self._request('GET', f'/entries/{entry_id}/fetch-content', 'fetch_content', entry_id=entry_id,
+                               params={'update_content': 'false'}, request_timeout=timeout, retries=retries,
+                               max_response_bytes=max_bytes)
+        if not isinstance(result, dict) or not isinstance(result.get('content'), str):
+            raise MetadataAPIError('fetch_content', 200, entry_id=entry_id, category='invalid_response')
+        return result
 
     def register_metadata(self, name, description):
         field = f'{NAMESPACE}.{name}'

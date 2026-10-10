@@ -18,6 +18,15 @@ metadata:
   relevance_criteria: ${MINIFLUX_AI_RELEVANCE_CRITERIA:-} # Required personal policy in metadata mode
   input_fields: []
 
+article_fetch: # Metadata mode: read-only Miniflux preview with the feed's scraper/rewrite rules
+  mode: thin # "off", thin, always
+  min_feed_chars: 500
+  min_article_chars: 200
+  timeout: 30
+  max_bytes: 2097152
+  max_text_chars: 20000
+  retries: 1
+
 llm:
   provider: openai
   api: chat_completions # Or responses with a compatible OpenAI gateway

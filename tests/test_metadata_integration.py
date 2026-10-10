@@ -28,11 +28,23 @@ from services.state import State
 
 class FixtureFeed(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = f'''<rss version="2.0"><channel><title>Local fixture</title>
-        <link>http://127.0.0.1:{self.server.server_port}/</link><description>Local fixture</description>
-        </channel></rss>'''.encode()
+        if self.path.startswith('/article'):
+            self.server.article_headers = dict(self.headers)
+            self.server.article_requests = getattr(self.server, 'article_requests', 0) + 1
+            body = ('''<html><body><nav>Excluded navigation</nav><div id="story"><p>
+            OLD_TERM introduces a caching mechanism for repeated requests. The publisher
+            reports lower latency in its own benchmark, but independent measurements are
+            not available. Existing deployments can enable the cache explicitly and
+            retain the documented fallback behavior.</p></div><aside>Excluded sidebar</aside>
+            </body></html>''').encode()
+            content_type = 'text/html'
+        else:
+            body = f'''<rss version="2.0"><channel><title>Local fixture</title>
+            <link>http://127.0.0.1:{self.server.server_port}/</link><description>Local fixture</description>
+            </channel></rss>'''.encode()
+            content_type = 'application/rss+xml'
         self.send_response(200)
-        self.send_header('Content-Type', 'application/rss+xml')
+        self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -95,11 +107,26 @@ class ForkIntegrationTests(unittest.TestCase):
         fixture_url = f'http://127.0.0.1:{fixture.server_port}/feed'
         category_id = client.get_categories()[0]['id']
         feed_id = client.create_feed(fixture_url, category_id=category_id)
-        imported = client.import_entry(feed_id, 'https://example.invalid/article', title='Original title',
+        article_url = f'http://127.0.0.1:{fixture.server_port}/article'
+        imported = client.import_entry(feed_id, article_url, title='Original title',
                                        content='<p>Original content</p>', tags=['React', 'TypeScript'], status='unread')
         entry_id = imported['id']
         original = client.get_entry(entry_id)
         self.assertNotIn('meta', original)
+        client.update_feed(feed_id, scraper_rules='#story', rewrite_rules='replace("OLD_TERM"|"RULEAPPLIED")',
+                           user_agent='companion-rule-fixture', cookie='fixture_cookie=yes')
+        preview = client.fetch_entry_content(entry_id, retries=0)
+        self.assertIn('RULEAPPLIED', preview['content'])
+        self.assertNotIn('OLD_TERM', preview['content'])
+        self.assertNotIn('Excluded navigation', preview['content'])
+        self.assertNotIn('Excluded sidebar', preview['content'])
+        self.assertEqual(fixture.article_headers.get('User-Agent'), 'companion-rule-fixture')
+        self.assertEqual(fixture.article_headers.get('Cookie'), 'fixture_cookie=yes')
+        self.assertFalse('X-Auth-Token' in fixture.article_headers)
+        self.assertFalse('Authorization' in fixture.article_headers)
+        after_preview = client.get_entry(entry_id)
+        for field in ('title', 'content', 'tags', 'changed_at'):
+            self.assertEqual(after_preview[field], original[field], field)
         client.ensure_metadata()
         self.assertEqual(client.get_entry(entry_id, meta=OUTPUT_FIELDS)['meta'], {})
         definition = client.register_metadata('summary', 'Description should not be replaced')
@@ -122,7 +149,9 @@ class ForkIntegrationTests(unittest.TestCase):
                        'at_a_glance_words': 75, 'story_words_min': 40, 'story_words_max': 70},
             timezone='UTC', editions={'morning': '05:00', 'evening': '12:00', 'night': '21:00'},
             weather={'enabled': False, 'max_age_minutes': 30}, miniflux_browser_url=url,
-            ai_news_url=fixture_url)
+            ai_news_url=fixture_url,
+            article_fetch={'mode': 'thin', 'min_feed_chars': 500, 'min_article_chars': 200,
+                           'timeout': 30, 'max_bytes': 2097152, 'max_text_chars': 20000, 'retries': 0})
         raw = json.dumps({'summary': 'A fixture summary.', 'rating': '8.5', 'topics': ['Ignored inference']})
         with patch('core.process_entries.get_ai_result', return_value=raw) as llm:
             with patch.object(State, 'complete_enrichment', side_effect=OSError('Simulated crash')):
@@ -136,6 +165,11 @@ class ForkIntegrationTests(unittest.TestCase):
             process_entry(client, original, config)
             process_entry(client, original, config)
             self.assertEqual(llm.call_count, 1)
+            model_input = json.loads(llm.call_args.args[1])
+            self.assertEqual(model_input['source']['kind'], 'miniflux_article')
+            self.assertIn('RULEAPPLIED', model_input['content'])
+            self.assertNotIn('Excluded sidebar', model_input['content'])
+            self.assertEqual(fixture.article_requests, 2)  # Manual preview + initial generation; retries do not refetch.
         enriched = client.get_entry(entry_id, meta=['*'])
         for field in ('id', 'title', 'content', 'tags', 'url'):
             self.assertEqual(enriched[field], original[field], field)

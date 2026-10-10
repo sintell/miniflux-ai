@@ -2,6 +2,7 @@ miniflux
 requests
 openai
 markdownify
+beautifulsoup4
 markdown
 PyYAML
 flask
