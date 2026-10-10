@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -198,6 +199,7 @@ class FeedsStatusTestCase(unittest.TestCase):
             self.assertEqual(state["latest_snapshot"]["failed_count"], 1)
             self.assertNotIn("events", state)
 
+    @unittest.skipUnless(os.environ.get('MINIFLUX_LIVE_TESTS') == '1', 'Live tests require MINIFLUX_LIVE_TESTS=1')
     def test_fetch_failed_feeds_from_config_server(self):
         config_file = Path(__file__).resolve().parents[1] / "config.yml"
         if not config_file.exists():

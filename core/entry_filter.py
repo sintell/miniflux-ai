@@ -7,6 +7,8 @@ BUILTIN_DENY_LIST = [
 ]
 
 def filter_entry(config, agent, entry):
+    if entry['content'].startswith('<!-- miniflux-ai -->'):
+        return False
     start_with_list = [name[1]['title'] for name in config.agents.items()]
     style_block = [name[1]['style_block'] for name in config.agents.items()]
     [start_with_list.append('<blockquote>') for i in style_block if i]
@@ -16,7 +18,8 @@ def filter_entry(config, agent, entry):
     deny_list = agent[1]['deny_list'] if agent[1].get('deny_list') is not None else agent[1].get('blacklist')
 
     # Always block internal URLs regardless of agent config
-    if any(fnmatch.fnmatch(entry['feed']['site_url'], pattern) for pattern in BUILTIN_DENY_LIST):
+    site_url = (entry.get('feed') or {}).get('site_url') or ''
+    if any(fnmatch.fnmatch(site_url, pattern) for pattern in BUILTIN_DENY_LIST):
         return False
 
     # filter, if not content starts with start flag
@@ -24,12 +27,12 @@ def filter_entry(config, agent, entry):
 
         # filter, if in allow_list
         if allow_list is not None:
-            if any(fnmatch.fnmatch(entry['feed']['site_url'], pattern) for pattern in allow_list):
+            if any(fnmatch.fnmatch(site_url, pattern) for pattern in allow_list):
                 return True
 
         # filter, if not in deny_list
         elif deny_list is not None:
-            if any(fnmatch.fnmatch(entry['feed']['site_url'], pattern) for pattern in deny_list):
+            if any(fnmatch.fnmatch(site_url, pattern) for pattern in deny_list):
                 return False
             else:
                 return True

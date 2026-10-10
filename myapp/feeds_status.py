@@ -10,13 +10,14 @@ from services.feeds_status_service import (
     should_render_summary_entry,
 )
 from feedgen.feed import FeedGenerator
+from common.config import Config
 
 from myapp import app
 
 
 @app.route("/rss/feeds-status", methods=["GET"])
 def miniflux_feeds_status():
-    state = load_feeds_status_state()
+    state = load_feeds_status_state(Config().feeds_status_path)
     snapshot = state.get("latest_snapshot")
 
     fg = FeedGenerator()

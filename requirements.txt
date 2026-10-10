@@ -6,7 +6,6 @@ PyYAML
 flask
 feedgen
 schedule
-ratelimit
 pytz
 tzdata
 google-genai

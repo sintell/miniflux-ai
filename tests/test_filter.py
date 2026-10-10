@@ -1,125 +1,22 @@
+from types import SimpleNamespace
 import unittest
-from yaml import safe_load
 from core.entry_filter import filter_entry
 
-test_config = '''
-{
-  "test_style_block": {
-    "agents": {
-      "test": {
-        "title": "🌐AI 翻译",
-        "style_block": true,
-        "allow_list": ,
-        "deny_list": 
-      }
-    }
-  },
-  "test_allow_list": {
-    "agents": {
-      "test": {
-        "title": "🌐AI 翻译",
-        "style_block": false,
-        "allow_list": [
-          "https://9to5mac.com/",
-          "https://home.kpmg/*"
-        ],
-        "deny_list": 
-      }
-    }
-  },
-  "test_deny_list": {
-    "agents": {
-      "test": {
-        "title": "🌐AI 翻译",
-        "style_block": false,
-        "allow_list": ,
-        "deny_list": [
-          "https://9to5mac.com/",
-          "https://home.kpmg/cn/zh/home/insights.html"
-        ]
-      }
-    }
-  },
-  "test_None": {
-    "agents": {
-      "test": {
-        "title": "🌐AI 翻译",
-        "style_block": false,
-        "allow_list": ,
-        "deny_list": 
-      }
-    }
-  }
-}
-'''
 
-test_entries = '''
-{
-  "test_style_block":
-    {
-        "entry":
-          {
-            "content": '<pre',
-            "feed":
-              {
-                "site_url": "https://weibo.com/1906286443/OAih1wghK",
-              },
-          },
-      "result": False,
-    },
-  "test_allow_list":
-    {
-        "entry":
-          {
-            "content": '123',
-            "feed":
-              {
-                "site_url": "https://home.kpmg/cn/zh/home/insights.html",
-              },
-          },
-      "result": True,
-    },
-  "test_deny_list":
-    {
-        "entry":
-          {
-            "content": '123',
-            "feed":
-              {
-                "site_url": "https://weibo.com/1906286443/OAih1wghK",
-              },
-          },
-      "result": True,
-    },
-  "test_None":
-    {
-        "entry":
-          {
-            "content": '123',
-            "feed":
-              {
-                "site_url": "https://weibo.com/1906286443/OAih1wghK",
-              },
-          },
-      "result": True,
-    },
-}
-
-'''
-
-configs = safe_load(test_config)
-entries = safe_load(test_entries)
-
-class MyTestCase(unittest.TestCase):
-    def test_entry_filter(self):
-        i = 0
-
-        for agent in configs.items():
-            entry = entries[list(configs.keys())[i]]
-            result = filter_entry(configs['test_style_block'], agent, entry['entry'])
-            self.assertEqual(result, entry['result'])
-            i += 1
-
-
-if __name__ == '__main__':
-    unittest.main()
+class FilterTests(unittest.TestCase):
+    def test_allow_deny_processed_and_internal_feeds(self):
+        agent = {'title': 'AI summary:', 'style_block': True}
+        config = SimpleNamespace(agents={'summary': agent})
+        for site, content, settings, expected in [
+            ('https://example.com', 'source', {}, True),
+            ('https://example.com', 'source', {'allow_list': ['https://elsewhere.com']}, False),
+            ('https://example.com', 'source', {'allow_list': ['https://example.*']}, True),
+            ('https://example.com', 'source', {'deny_list': ['https://example.*']}, False),
+            ('https://example.com', '<!-- miniflux-ai -->source', {}, False),
+            ('https://example.com', '<blockquote>old summary', {}, False),
+            ('https://ai-news.miniflux', 'source', {}, False),
+            ('https://feeds-status.miniflux', 'source', {}, False),
+        ]:
+            with self.subTest(site=site, content=content, settings=settings):
+                entry = {'content': content, 'feed': {'site_url': site}}
+                self.assertEqual(filter_entry(config, ('summary', agent | settings), entry), expected)

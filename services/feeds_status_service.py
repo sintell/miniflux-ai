@@ -2,9 +2,12 @@ import hashlib
 import html
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
+from services.editorial import canonical_url
 
 
 logger = logging.getLogger(__name__)
@@ -124,8 +127,22 @@ def load_feeds_status_state(file_path=FEEDS_STATUS_FILE):
 
 def save_feeds_status_state(state, file_path=FEEDS_STATUS_FILE):
     path = Path(file_path)
-    with path.open("w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2, ensure_ascii=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.feeds-status-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as file:
+            json.dump(state, file, indent=2, ensure_ascii=False)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def update_feeds_status_state(feeds, file_path=FEEDS_STATUS_FILE, now=None):
@@ -160,7 +177,7 @@ def ensure_miniflux_feed(miniflux_client, feed_url, feed_name, category_id=1):
         return
 
     feeds = miniflux_client.get_feeds()
-    if any(item.get("feed_url") == feed_url for item in feeds):
+    if any(canonical_url(item.get("feed_url")) == canonical_url(feed_url) for item in feeds):
         return
 
     try:
@@ -175,7 +192,7 @@ def refresh_miniflux_feed(miniflux_client, feed_url, feed_name):
         return
 
     feeds = miniflux_client.get_feeds()
-    feed_id = next((item["id"] for item in feeds if item.get("feed_url") == feed_url), None)
+    feed_id = next((item["id"] for item in feeds if canonical_url(item.get("feed_url")) == canonical_url(feed_url)), None)
     if not feed_id:
         logger.warning("Cannot refresh the %s feed because it is not subscribed in Miniflux yet", feed_name)
         return

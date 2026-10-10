@@ -1,62 +1,47 @@
-import json
-import markdown
-from ratelimit import limits, sleep_and_retry
-import threading
+import html
 
 from common.config import Config
 from common.logger import logger
 from core.entry_filter import filter_entry
 from core.get_ai_result import get_ai_result
+from services.editorial import expand_prompt
+from services.state import State
 
-config = Config()
-file_lock = threading.Lock()
 
-@sleep_and_retry
-@limits(calls=config.llm_RPM, period=60)
-def process_entry(miniflux_client, entry):
-    #Todo change to queue
-    llm_result = ''
-
-    for agent in config.agents.items():
-        # filter, if AI is not generating, and in allow_list, or not in deny_list
-        if filter_entry(config, agent, entry):
-
-            try:
-                response_content = get_ai_result(agent[1]["prompt"], entry["content"])
-            except Exception as e:
-                logger.error(
-                    f"Error processing entry {entry['id']} with agent {agent[0]}: {e}"
-                )
+def process_entry(miniflux_client, entry, config=None):
+    config = config or Config()
+    state = State(config.state_path)
+    with state.entry_lock(entry['id']):
+        # Re-fetch to avoid processing a stale polling/webhook copy after another worker updated it.
+        entry = miniflux_client.get_entry(entry['id'])
+        blocks = []
+        for name, agent in config.agents.items():
+            if not filter_entry(config, (name, agent), entry):
                 continue
-            log_content = (response_content or "")[:20] + '...' if len(response_content or "") > 20 else response_content
-            logger.info(f"agents:{agent[0]} feed_id:{entry['id']} result:{log_content}")
-
-            # save for ai_summary
-            if agent[0] == 'summary':
-                entry_list = {
-                    'datetime': entry['created_at'],
-                    'category': entry['feed']['category']['title'],
-                    'title': entry['title'],
-                    'content': response_content,
-                    'url': entry['url']
-                }
-                with file_lock:
-                    try:
-                        with open('entries.json', 'r') as file:
-                            data = json.load(file)
-                    except (FileNotFoundError, json.JSONDecodeError):
-                        data = []
-                    data.append(entry_list)
-                    with open('entries.json', 'w') as file:
-                        json.dump(data, file, indent=4, ensure_ascii=False)
-
-            if agent[1]['style_block']:
-                llm_result = (llm_result + '<blockquote>\n  <p><strong>'
-                              + agent[1]['title'] + '</strong> '
-                              + response_content.replace('\n', '').replace('\r', '')
-                              + '\n</p>\n</blockquote><br/>')
-            else:
-                llm_result = llm_result + f"{agent[1]['title']}{markdown.markdown(response_content)}<hr><br />"
-
-    if len(llm_result) > 0:
-        dict_result = miniflux_client.update_entry(entry['id'], content= llm_result + entry['content'])
+            try:
+                existing = state.get_record(entry['id']) if name == 'summary' else None
+                if existing:
+                    response = existing['summary']
+                else:
+                    prompt = config.article_prompt if name == 'summary' else agent['prompt']
+                    response = get_ai_result(expand_prompt(prompt, config.editorial, config.language), entry['content'])
+                if name == 'summary' and not existing:
+                    feed = entry.get('feed') or {}
+                    state.enqueue({
+                        'entry_id': entry['id'], 'feed_id': feed.get('id', entry.get('feed_id')),
+                        'datetime': entry.get('published_at', entry.get('created_at', '')),
+                        'category': (feed.get('category') or {}).get('title', ''),
+                        'title': entry.get('title', ''), 'summary': response, 'url': entry.get('url', ''),
+                        'feed_title': feed.get('title', ''), 'feed_url': feed.get('feed_url', ''),
+                        'site_url': feed.get('site_url', ''),
+                    })
+                title = html.escape(agent.get('title', 'AI summary:'))
+                paragraphs = '</p><p>'.join(html.escape(response).split('\n\n'))
+                block = f'<p><strong>{title}</strong> {paragraphs}</p>'
+                blocks.append(f'<blockquote>{block}</blockquote>' if agent.get('style_block') else block)
+            except Exception:
+                logger.exception('Error processing entry %s with agent %s', entry['id'], name)
+                # Do not mark a partially processed entry: retry using the saved summary.
+                raise
+        if blocks:
+            miniflux_client.update_entry(entry['id'], content='<!-- miniflux-ai -->' + '\n'.join(blocks) + entry['content'])
