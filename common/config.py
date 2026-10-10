@@ -105,6 +105,14 @@ class Config:
                 raise ValueError('miniflux.schedule_interval must be positive')
 
         self.llm_provider = self.get_config_value('llm', 'provider', 'openai')
+        self.llm_api = self.get_config_value('llm', 'api', 'chat_completions')
+        if self.llm_api not in ('chat_completions', 'responses'):
+            raise ValueError('llm.api must be chat_completions or responses')
+        if self.llm_provider != 'openai' and self.llm_api != 'chat_completions':
+            raise ValueError('llm.api: responses requires llm.provider: openai')
+        self.llm_structured_output = self.get_config_value('llm', 'structured_output', 'json_object')
+        if self.llm_structured_output not in ('json_object', 'prompt'):
+            raise ValueError('llm.structured_output must be json_object or prompt')
         self.llm_base_url = self.get_config_value('llm', 'base_url', None)
         self.llm_api_key = self.get_config_value('llm', 'api_key', None)
         self.llm_model = self.get_config_value('llm', 'model', None)

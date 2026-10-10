@@ -22,6 +22,9 @@ metadata:
 
 llm:
   provider: openai # openai or gemini
+  api: chat_completions # Explicit openai API: chat_completions (default) or responses
+  # responses preserves backend failed/incomplete status through the Codex gateway.
+  structured_output: prompt # Verified for gpt-6-luna via Codex; local JSON validation remains strict
   base_url: http://codex-api:18080/v1
   api_key: ${LLM_API_KEY} # Separate from Miniflux's API key
   model: gpt-6-luna

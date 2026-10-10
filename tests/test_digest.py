@@ -15,6 +15,7 @@ from core.process_entries import process_entry
 from services.editorial import ARTICLE_PROMPT, DIGEST_PROMPT, canonical_url, expand_prompt, render_digest, safe_url, validate_digest
 from services.rss import render_feed
 from services.state import State
+from services.llm_diagnostics import LLMError
 
 
 EDITORIAL = {'at_a_glance_words': 75, 'max_stories': 8, 'max_groups': 3,
@@ -350,8 +351,9 @@ class RequestTests(unittest.TestCase):
         budget.__enter__ = Mock()
         budget.__exit__ = Mock(return_value=False)
         with patch('core.get_ai_result.runtime', return_value=(config, client, budget)), patch('core.get_ai_result.time.sleep'):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(LLMError) as caught:
                 get_ai_result('English', '{}', structured=True)
+        self.assertEqual(caught.exception.status_code, 503)
         self.assertEqual(budget.__enter__.call_count, 3)
         self.assertEqual(client.chat.completions.create.call_count, 3)
 

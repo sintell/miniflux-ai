@@ -20,6 +20,8 @@ metadata:
 
 llm:
   provider: openai
+  api: chat_completions # Or responses with a compatible OpenAI gateway
+  structured_output: json_object # Or prompt when API JSON mode is rejected; validation stays strict
   base_url: http://host.docker.internal:11434/v1
   api_key: ${LLM_API_KEY:-ollama}
   model: llama3.1:latest

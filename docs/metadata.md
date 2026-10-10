@@ -57,7 +57,63 @@ content injection. `ai_news.prompts.article` still controls the summary brief;
 the producer appends its strict JSON/rating/topics contract. The process-wide
 language policy and LLM concurrency/RPM/retry budgets still apply.
 
-## Producer conventions
+## LLM endpoint and failure diagnostics
+
+`llm.api` explicitly selects `chat_completions` (default) or `responses` for the
+OpenAI provider. It does not select the metadata storage mode, and there is no
+automatic endpoint fallback. Gemini continues using its own generation API.
+
+The NAS Codex gateway v0.2.1's Chat adapter can turn an upstream failed response
+into HTTP 200 with empty message content, dropping the backend error/status.
+This is a known diagnostic gap, not proof of a particular cause for an empty
+response. For a compatible gateway, the native Responses option preserves that
+status so the companion can reject it with useful controlled diagnostics:
+
+```yaml
+llm:
+  provider: openai
+  api: responses
+  extra_params:
+    reasoning_effort: low # Mapped to Responses reasoning.effort
+```
+
+Other `extra_params` must match the selected API. Structured generation defaults
+to `llm.structured_output: json_object` on either endpoint. If a model rejects
+the API format option (`response_format` / gateway `text.format`), explicitly use:
+
+```yaml
+llm:
+  structured_output: prompt
+```
+
+Prompt-only mode retains the JSON contract in the system prompt and preserves
+structured source-message boundaries; it omits the API JSON-format parameter.
+The same strict local JSON/rating/digest validation still applies: non-JSON output
+is rejected, never repaired or marked complete. Remove any `response_format`,
+`text.format` or `response_mime_type` overrides from `extra_params`; conflicting
+options are rejected before generation. There is no automatic switch to this mode.
+This setting and native Responses support require companion version 1.1.1 or
+newer; setting these keys on 1.1.0 does not change its requests. The NAS synthetic
+probe with `gpt-6-luna` rejected API JSON mode with HTTP 400 naming `text.format`,
+then returned valid summary/rating/topics JSON when that option was omitted.
+The English Codex example therefore explicitly selects `prompt`. This probe is
+evidence for request compatibility, not full-article or production-processing success.
+
+A request rejection does not silently remove options or regenerate using
+another endpoint. Failed/incomplete, tool-only, refusal and empty responses are
+not successful enrichment. Transient HTTP/transport retries retain the existing
+shared request budget and bounded backoff; empty/failed response objects do not
+automatically consume extra generation requests.
+
+HTTP error logs include status, endpoint and allowlisted provider codes/parameter
+names. Empty-response logs include finish reason and token/choice counts, without
+printing text, refusals or tool arguments. Native Responses errors also include
+backend status and output/reasoning-item counts. Arbitrary provider messages,
+codes, parameters, headers and credentials are withheld. Unknown errors still
+require matching gateway logs or an explicitly run synthetic diagnostic probe;
+do not assume JSON mode is unsupported solely from a generic HTTP 400.
+
+## Producer field conventions
 
 Namespace is `miniflux_ai`, owned by the ordinary authenticated Miniflux user:
 

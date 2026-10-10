@@ -34,6 +34,23 @@ class ConfigTestCase(unittest.TestCase):
         config = self.Config()
 
         self.assertEqual(config.llm_extra_params, {})
+        self.assertEqual(config.llm_api, 'chat_completions')
+        self.assertEqual(config.llm_structured_output, 'json_object')
+
+    def test_explicit_responses_api_configuration(self):
+        self.write_config('llm:\n  provider: openai\n  api: responses\n')
+        self.assertEqual(self.Config().llm_api, 'responses')
+        for content in ('llm:\n  api: auto\n', 'llm:\n  provider: gemini\n  api: responses\n'):
+            self.write_config(content)
+            with self.assertRaises(ValueError):
+                self.Config()
+
+    def test_explicit_prompt_only_structured_output(self):
+        self.write_config('llm:\n  structured_output: prompt\n')
+        self.assertEqual(self.Config().llm_structured_output, 'prompt')
+        self.write_config('llm:\n  structured_output: auto\n')
+        with self.assertRaisesRegex(ValueError, 'structured_output'):
+            self.Config()
 
     def test_extra_params_accepts_nested_mapping(self):
         self.write_config(

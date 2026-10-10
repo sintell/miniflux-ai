@@ -8,6 +8,7 @@ import time
 from markdownify import markdownify as md
 from common.config import Config
 from services.editorial import GenerationError, LANGUAGE_POLICY
+from services.llm_diagnostics import LLMError, chat_text, responses_text, request_error
 
 
 class RequestBudget:
@@ -80,31 +81,60 @@ def build_messages(prompt, request, config, structured=False):
 def get_ai_result(prompt: str, request: str, *, structured=False):
     config, client, budget = runtime()
     messages = build_messages(prompt, request, config, structured)
+    api = getattr(config, 'llm_api', 'chat_completions')
+    structured_output = getattr(config, 'llm_structured_output', 'json_object')
     for attempt in range(config.llm_retries + 1):
         try:
             with budget:
                 params = dict(config.llm_extra_params)
+                if structured and structured_output == 'prompt':
+                    # Explicit prompt-only mode must not accidentally send a
+                    # format constraint through extra_params. Never auto-fallback.
+                    if ('response_format' in params or 'response_mime_type' in params
+                            or isinstance(params.get('text'), dict) and 'format' in params['text']):
+                        raise LLMError('configuration', details='structured_output=prompt',
+                                       advice='Remove response_format, response_mime_type and text.format from extra_params in prompt-only mode.')
                 if config.llm_provider == 'gemini':
                     from google.genai import types
-                    if structured:
+                    if structured and structured_output == 'json_object':
                         params['response_mime_type'] = 'application/json'
                     response = client.models.generate_content(
                         model=config.llm_model, contents=messages[1]['content'],
                         config=types.GenerateContentConfig(system_instruction=messages[0]['content'], **params))
                     text = response.text
                 else:
-                    if structured:
-                        params['response_format'] = {'type': 'json_object'}
-                    response = client.chat.completions.create(
-                        model=config.llm_model, messages=messages, timeout=config.llm_timeout, **params)
-                    text = response.choices[0].message.content
-                if not text or not text.strip():
+                    if api == 'responses':
+                        # The NAS gateway accepts native Responses. Its Chat
+                        # adapter drops backend failed-status/error information.
+                        if 'reasoning_effort' in params:
+                            reasoning = params.get('reasoning', {})
+                            if not isinstance(reasoning, dict) or 'effort' in reasoning:
+                                raise LLMError('configuration', details='parameter=reasoning_effort',
+                                               advice='Specify reasoning.effort or reasoning_effort, not both.')
+                            params['reasoning'] = dict(reasoning, effort=params.pop('reasoning_effort'))
+                        if structured and structured_output == 'json_object':
+                            text_config = params.get('text', {})
+                            if not isinstance(text_config, dict):
+                                raise LLMError('configuration', details='parameter=text', advice='Responses text options must be a mapping.')
+                            params['text'] = dict(text_config, format={'type': 'json_object'})
+                        response = client.responses.create(
+                            model=config.llm_model, input=messages, timeout=config.llm_timeout, **params)
+                        text = responses_text(response)
+                    else:
+                        if structured and structured_output == 'json_object':
+                            params['response_format'] = {'type': 'json_object'}
+                        response = client.chat.completions.create(
+                            model=config.llm_model, messages=messages, timeout=config.llm_timeout, **params)
+                        text = chat_text(response)
+                if not isinstance(text, str) or not text.strip():
                     raise GenerationError('LLM returned empty text (no message content)')
                 return text
         except Exception as exc:
+            if isinstance(exc, GenerationError):
+                raise
             status = getattr(exc, 'status_code', None) or getattr(exc, 'code', None)
             transient = status in (429, 500, 502, 503, 504) or isinstance(exc, TimeoutError)
             transient = transient or type(exc).__name__ in ('APIConnectionError', 'APITimeoutError')
             if not transient or attempt == config.llm_retries:
-                raise
+                raise request_error(exc, api=api if config.llm_provider == 'openai' else 'gemini', structured=structured) from None
             time.sleep(min(2 ** (attempt + 1), 30))
