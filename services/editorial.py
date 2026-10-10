@@ -4,6 +4,13 @@ import json
 from urllib.parse import urlsplit
 
 
+class GenerationError(ValueError):
+    """A safe diagnostic containing only controlled field names, counts and limits.
+
+    Never include model/source text, returned IDs, URLs or credentials in messages.
+    """
+
+
 LANGUAGE_POLICY = """Write all generated prose in ${language}, regardless of source language.
 Preserve product names, versions, numbers, qualifications and uncertainty. Attribute
 marketing claims; do not present them as established facts. Never invent details.
@@ -92,42 +99,62 @@ def entry_url(record, browser_url):
 
 
 def validate_digest(raw, records, editorial):
-    result = json.loads(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        raise GenerationError('LLM returned no JSON text')
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise GenerationError(f'LLM returned invalid JSON at line {exc.lineno}, column {exc.colno}') from None
     if not isinstance(result, dict):
-        raise ValueError("Digest must be an object")
+        raise GenerationError('Digest must be a JSON object')
     for key in ("title", "opening", "at_a_glance"):
         if not isinstance(result.get(key), str) or not result[key].strip():
-            raise ValueError(f"Missing digest {key}")
+            raise GenerationError(f'Digest field {key} must be a nonempty string')
     labels = result.get('labels')
-    if not isinstance(labels, dict) or any(not isinstance(labels.get(key), str) or not labels[key].strip()
-                                         for key in ('at_a_glance', 'stories', 'original_article', 'source')):
-        raise ValueError('Missing localized digest labels')
+    if not isinstance(labels, dict):
+        raise GenerationError('Digest labels must be an object with localized section/link labels')
+    for key in ('at_a_glance', 'stories', 'original_article', 'source'):
+        if not isinstance(labels.get(key), str) or not labels[key].strip():
+            raise GenerationError(f'Digest field labels.{key} must be a nonempty string')
     stories = result.get("stories")
-    if not isinstance(stories, list) or not 1 <= len(stories) <= editorial["max_stories"]:
-        raise ValueError("Digest must contain a nonempty, bounded story list")
+    if not isinstance(stories, list):
+        raise GenerationError('Digest stories must be a list')
+    if not stories:
+        raise GenerationError('LLM returned no stories; empty editions are not published')
+    if len(stories) > editorial['max_stories']:
+        raise GenerationError(f"LLM returned {len(stories)} stories; max_stories={editorial['max_stories']}")
     known = {r["record_id"] for r in records}
     seen = set()
     groups = set()
-    for story in stories:
+    for index, story in enumerate(stories):
         if not isinstance(story, dict):
-            raise ValueError("Invalid story")
+            raise GenerationError(f'stories[{index}] must be an object')
         for field in ("headline", "body"):
             if not isinstance(story.get(field), str) or not story[field].strip():
-                raise ValueError(f"Missing story {field}")
+                raise GenerationError(f'stories[{index}].{field} must be a nonempty string')
         ids = story.get("source_ids")
-        if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in known for i in ids):
-            raise ValueError("Unknown or missing source IDs")
-        if len(set(ids)) != len(ids) or seen.intersection(ids):
-            raise ValueError("Duplicate source coverage; merge stories")
+        if not isinstance(ids, list) or not ids:
+            raise GenerationError(f'stories[{index}].source_ids must be a nonempty list')
+        invalid = sum(not isinstance(identity, str) for identity in ids)
+        if invalid:
+            raise GenerationError(f'stories[{index}].source_ids contains {invalid} non-string IDs; copy supplied record_id strings exactly')
+        unknown = sum(identity not in known for identity in ids)
+        if unknown:
+            raise GenerationError(f'stories[{index}].source_ids contains {unknown} unknown IDs; copy supplied record_id strings exactly')
+        if len(set(ids)) != len(ids):
+            raise GenerationError(f'stories[{index}].source_ids repeats IDs within the story')
+        reused = len(seen.intersection(ids))
+        if reused:
+            raise GenerationError(f'stories[{index}] reuses {reused} source IDs from earlier stories; merge duplicate coverage')
         seen.update(ids)
         group = story.get("group", "")
         if not isinstance(group, str):
-            raise ValueError("Invalid topic group")
+            raise GenerationError(f'stories[{index}].group must be a string (use an empty string for no group)')
         if group.strip():
             groups.add(group.strip())
         story["group"] = group.strip()
     if len(groups) > editorial["max_groups"]:
-        raise ValueError("Too many topic groups")
+        raise GenerationError(f"LLM returned {len(groups)} topic groups; max_groups={editorial['max_groups']}")
     return result
 
 

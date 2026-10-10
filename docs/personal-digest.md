@@ -208,7 +208,22 @@ serve all retained editions with stable IDs/timestamps; no automatic pruning is
 performed. Miniflux's GUID deduplication prevents repeated GETs creating new copies.
 Keep normal Miniflux feed polling enabled. Monitor database/feed growth over time.
 
-## Offline tests
+## Diagnosing failed editions
+
+Since version `1.0.1`, diagnostics identify the failing stage (`input`, `llm`, `validation`,
+`rendering` or `storage`), candidate/selected record counts and input/response
+character counts. Controlled validation errors include the field path and reason,
+such as unknown source IDs, missing localized labels or a story/group limit.
+Raw model text, source records, returned ID values and arbitrary exception messages
+are not logged; HTTP/SDK exceptions can contain credentials. The queue is preserved
+and validation failures do not trigger additional LLM calls automatically.
+
+The original `1.0.0` image logs only the exception type, e.g. `(ValueError)`, and
+does not retain rejected LLM responses. That historical line cannot identify the
+failed validation rule, and changing log level cannot recover it. A build with
+the new diagnostics reports the reason on the next normal generation attempt.
+
+## Running offline tests
 
 ```sh
 python3 -m venv .venv

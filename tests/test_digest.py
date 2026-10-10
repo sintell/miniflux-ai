@@ -88,6 +88,55 @@ class DigestTests(unittest.TestCase):
             self.assertIsNone(self.generate(Mock(return_value=output([record['record_id']]))))
         self.assertEqual(self.state.queued(), [record])
 
+    def test_validation_failure_logs_reason_without_model_or_source_content(self):
+        record = self.queue(summary='PRIVATE ARTICLE TEXT')
+        raw = output(['SECRET_UNKNOWN_ID'], opening='PRIVATE GENERATED TEXT')
+        with self.assertLogs('miniflux_ai', level='ERROR') as logs:
+            self.assertIsNone(self.generate(Mock(return_value=raw)))
+        text = '\n'.join(logs.output)
+        self.assertIn('stage=validation', text)
+        self.assertIn('stories[0].source_ids contains 1 unknown IDs', text)
+        self.assertIn(f'response_chars={len(raw)}', text)
+        for private in ('PRIVATE ARTICLE TEXT', 'SECRET_UNKNOWN_ID', 'PRIVATE GENERATED TEXT'):
+            self.assertNotIn(private, text)
+        self.assertEqual(self.state.queued(), [record])
+
+    def test_input_failure_is_diagnosable_without_calling_llm(self):
+        record = self.queue(summary='x' * 2000)
+        self.config.editorial['max_input_chars'] = 1000
+        llm = Mock()
+        with self.assertLogs('miniflux_ai', level='ERROR') as logs:
+            self.assertIsNone(self.generate(llm))
+        text = '\n'.join(logs.output)
+        self.assertIn('stage=input', text)
+        self.assertIn('max_input_chars=1000', text)
+        llm.assert_not_called()
+        self.assertEqual(self.state.queued(), [record])
+
+    def test_untrusted_exception_messages_are_not_logged(self):
+        record = self.queue()
+        error = ValueError('Invalid header value SECRET_API_KEY')
+        with self.assertLogs('miniflux_ai', level='ERROR') as logs:
+            self.assertIsNone(self.generate(Mock(side_effect=error)))
+        text = '\n'.join(logs.output)
+        self.assertIn('stage=llm error=ValueError', text)
+        self.assertNotIn('SECRET_API_KEY', text)
+        self.assertEqual(self.state.queued(), [record])
+
+    def test_json_and_schema_failures_report_safe_field_paths(self):
+        record = self.queue()
+        for raw, expected in (
+            ('{\nPRIVATE RESPONSE', 'invalid JSON at line 2, column 1'),
+            (output([record['record_id']], labels={'source': 'PRIVATE LABEL'}), 'labels.at_a_glance'),
+            (output([record['record_id']], stories=[]), 'no stories'),
+        ):
+            with self.subTest(expected=expected), self.assertLogs('miniflux_ai', level='ERROR') as logs:
+                self.assertIsNone(self.generate(Mock(return_value=raw)))
+            text = '\n'.join(logs.output)
+            self.assertIn(expected, text)
+            self.assertNotIn('PRIVATE', text)
+        self.assertEqual(self.state.queued(), [record])
+
     def test_new_arrivals_survive_and_refresh_failure_does_not_regenerate(self):
         record = self.queue()
         def llm(*args, **kwargs):

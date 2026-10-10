@@ -7,7 +7,7 @@ import time
 
 from markdownify import markdownify as md
 from common.config import Config
-from services.editorial import LANGUAGE_POLICY
+from services.editorial import GenerationError, LANGUAGE_POLICY
 
 
 class RequestBudget:
@@ -99,7 +99,7 @@ def get_ai_result(prompt: str, request: str, *, structured=False):
                         model=config.llm_model, messages=messages, timeout=config.llm_timeout, **params)
                     text = response.choices[0].message.content
                 if not text or not text.strip():
-                    raise ValueError('Empty LLM response')
+                    raise GenerationError('LLM returned empty text (no message content)')
                 return text
         except Exception as exc:
             status = getattr(exc, 'status_code', None) or getattr(exc, 'code', None)
