@@ -10,8 +10,11 @@ def filter_entry(config, agent, entry):
     if entry['content'].startswith('<!-- miniflux-ai -->'):
         return False
     start_with_list = [name[1]['title'] for name in config.agents.items()]
-    style_block = [name[1]['style_block'] for name in config.agents.items()]
-    [start_with_list.append('<blockquote>') for i in style_block if i]
+    # A publisher's leading quote is not evidence of previous metadata enrichment.
+    # Keep the old content-injection heuristic only for the legacy path.
+    if getattr(config, 'enrichment_mode', 'legacy_content') != 'metadata':
+        if any(agent['style_block'] for agent in config.agents.values()):
+            start_with_list.append('<blockquote>')
 
     # Todo Compatible with whitelist/blacklist parameter, to be removed
     allow_list = agent[1].get('allow_list') if agent[1].get('allow_list') is not None else agent[1].get('whitelist')
