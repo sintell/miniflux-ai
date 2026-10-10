@@ -56,6 +56,39 @@ class ConfigTestCase(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.Config()
 
+    def test_metadata_mode_requires_personal_policy_and_summary_selection(self):
+        self.write_config('miniflux:\n  enrichment_mode: metadata\n')
+        with self.assertRaisesRegex(ValueError, 'relevance_criteria is required'):
+            self.Config()
+        self.write_config('miniflux:\n  enrichment_mode: metadata\nmetadata:\n  relevance_criteria: Test policy\n')
+        with self.assertRaisesRegex(ValueError, 'agents.summary'):
+            self.Config()
+        self.write_config('''
+miniflux:
+  enrichment_mode: metadata
+metadata:
+  relevance_criteria: Test policy
+  input_fields: [another_app.context, another_app.context]
+agents:
+  summary: {title: 'AI summary:', style_block: true}
+''')
+        config = self.Config()
+        self.assertEqual(config.enrichment_mode, 'metadata')
+        self.assertEqual(config.relevance_criteria, 'Test policy')
+        self.assertEqual(config.metadata_input_fields, ['another_app.context'])
+
+    def test_legacy_default_and_invalid_metadata_settings(self):
+        self.write_config('{}')
+        self.assertEqual(self.Config().enrichment_mode, 'legacy_content')
+        for content in ('miniflux:\n  enrichment_mode: auto\n',
+                        'metadata:\n  input_fields: ["*"]\n',
+                        'metadata:\n  input_fields: [unqualified]\n',
+                        'metadata:\n  input_fields: a.field\n',
+                        'miniflux:\n  retries: 6\n', 'miniflux:\n  timeout: 0\n'):
+            self.write_config(content)
+            with self.assertRaises(ValueError):
+                self.Config()
+
     def test_language_editorial_units_and_environment(self):
         self.write_config('''
 language: ${TEST_LANGUAGE:-English}

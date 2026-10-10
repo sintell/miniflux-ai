@@ -52,6 +52,11 @@ class State:
                 );
                 CREATE TABLE IF NOT EXISTS imports (name TEXT PRIMARY KEY, imported_at TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS records_queue ON records(processed_by);
+                CREATE TABLE IF NOT EXISTS enrichments (
+                    entry_id INTEGER PRIMARY KEY, values_json TEXT NOT NULL,
+                    record_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL, completed_at TEXT, error_category TEXT
+                );
             ''')
 
     @contextmanager
@@ -96,6 +101,44 @@ class State:
             db.execute('INSERT OR IGNORE INTO records(id,payload,created_at) VALUES (?,?,?)',
                        (record['record_id'], json.dumps(record, ensure_ascii=False), timestamp()))
         return record
+
+    def get_enrichment(self, entry_id):
+        with self.connect() as db:
+            row = db.execute('SELECT * FROM enrichments WHERE entry_id=?', (entry_id,)).fetchone()
+        if row is None:
+            return None
+        return dict(row) | {'values': json.loads(row['values_json']), 'record': json.loads(row['record_json'])}
+
+    def save_enrichment(self, entry_id, values, record):
+        record = normalize_record(record)
+        with self.connect() as db:
+            db.execute('INSERT OR IGNORE INTO enrichments(entry_id,values_json,record_json,created_at) VALUES (?,?,?,?)',
+                       (entry_id, json.dumps(values, ensure_ascii=False), json.dumps(record, ensure_ascii=False), timestamp()))
+        return self.get_enrichment(entry_id)
+
+    def pending_enrichments(self):
+        with self.connect() as db:
+            return [row['entry_id'] for row in db.execute(
+                "SELECT entry_id FROM enrichments WHERE status='pending' ORDER BY created_at,entry_id")]
+
+    def enrichment_failed(self, entry_id, category):
+        with self.connect() as db:
+            db.execute('UPDATE enrichments SET error_category=?,status=? WHERE entry_id=? AND status!=?',
+                       (category, 'unavailable' if category == 'entry_not_found' else 'pending', entry_id, 'complete'))
+
+    def complete_enrichment(self, entry_id):
+        # Publication into the digest queue and remote-write completion are one local
+        # transaction. A crash before this commit retries the same idempotent PATCH.
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT record_json FROM enrichments WHERE entry_id=?', (entry_id,)).fetchone()
+            if row is None:
+                raise ValueError('No saved enrichment to complete')
+            record = json.loads(row['record_json'])
+            db.execute('INSERT OR IGNORE INTO records(id,payload,created_at) VALUES (?,?,?)',
+                       (record['record_id'], row['record_json'], timestamp()))
+            db.execute("UPDATE enrichments SET status='complete',completed_at=?,error_category=NULL WHERE entry_id=?",
+                       (timestamp(), entry_id))
 
     def queued(self, limit=100):
         with self.connect() as db:

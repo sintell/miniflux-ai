@@ -3,9 +3,9 @@ import hmac
 import hashlib
 import concurrent.futures
 from common.logger import logger
-import traceback
 
-import miniflux
+from services.miniflux_client import create_client, MetadataAPIError
+from services.editorial import GenerationError
 from common.config import Config
 from core import process_entry
 from myapp import app
@@ -28,7 +28,7 @@ def miniflux_ai():
               status: string
     """
     config = Config()
-    miniflux_client = miniflux.Client(config.miniflux_base_url, api_key=config.miniflux_api_key)
+    miniflux_client = create_client(config)
     webhook_secret = config.miniflux_webhook_secret
     if not webhook_secret:
         abort(403)
@@ -46,14 +46,14 @@ def miniflux_ai():
             futures = []
             for i in entries['entries']:
                 i['feed'] = entries['feed']
-                futures.append(executor.submit(process_entry, miniflux_client, i))
+                futures.append(executor.submit(process_entry, miniflux_client, i, config))
             
             for future in concurrent.futures.as_completed(futures):
                 try:
                     data = future.result()
                 except Exception as e:
-                    logger.error(traceback.format_exc())
-                    logger.error('generated an exception: %s' % e)
-                    return 500
+                    reason = str(e) if isinstance(e, (MetadataAPIError, GenerationError)) else type(e).__name__
+                    logger.error('Webhook enrichment failed: %s', reason)
+                    return jsonify({'status': 'enrichment_failed'}), 500
 
         return jsonify({'status': 'ok'})

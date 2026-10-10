@@ -1,7 +1,6 @@
 import concurrent.futures
 import time
 
-import miniflux
 import schedule
 
 from common import Config, logger
@@ -13,6 +12,7 @@ from services.feeds_status_service import (
     generate_feeds_status,
     resolve_feeds_status_url,
 )
+from services.miniflux_client import create_client
 
 
 def resolve_ai_news_url(config):
@@ -79,7 +79,7 @@ def my_flask(config):
 def main():
     config = Config()
     logger.setLevel(config.log_level)
-    client = miniflux.Client(config.miniflux_base_url, api_key=config.miniflux_api_key)
+    client = create_client(config)
     # Serve saved RSS even when Miniflux is temporarily unreachable at startup.
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(my_schedule, config, client)]

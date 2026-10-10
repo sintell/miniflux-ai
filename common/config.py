@@ -79,6 +79,24 @@ class Config:
         if self.miniflux_browser_url and (urlsplit(self.miniflux_browser_url).query or urlsplit(self.miniflux_browser_url).fragment):
             raise ValueError('miniflux.browser_url must not include a query or fragment')
         self.miniflux_api_key = self.get_config_value('miniflux', 'api_key', None)
+        self.enrichment_mode = self.get_config_value('miniflux', 'enrichment_mode', 'legacy_content')
+        if self.enrichment_mode not in ('legacy_content', 'metadata'):
+            raise ValueError('miniflux.enrichment_mode must be legacy_content or metadata')
+        self.miniflux_timeout = self.get_config_value('miniflux', 'timeout', 30)
+        if isinstance(self.miniflux_timeout, bool) or not isinstance(self.miniflux_timeout, (int, float)) or not math.isfinite(self.miniflux_timeout) or self.miniflux_timeout <= 0:
+            raise ValueError('miniflux.timeout must be positive and finite')
+        self.miniflux_retries = self.get_config_value('miniflux', 'retries', 2)
+        if isinstance(self.miniflux_retries, bool) or not isinstance(self.miniflux_retries, int) or not 0 <= self.miniflux_retries <= 5:
+            raise ValueError('miniflux.retries must be between 0 and 5')
+        self.relevance_criteria = self.get_config_value('metadata', 'relevance_criteria', '')
+        self.metadata_input_fields = self.get_config_value('metadata', 'input_fields', [])
+        from services.miniflux_client import QUALIFIED_FIELD
+        if not isinstance(self.metadata_input_fields, list) or any(
+                not isinstance(field, str) or not QUALIFIED_FIELD.fullmatch(field) for field in self.metadata_input_fields):
+            raise ValueError('metadata.input_fields must be a list of explicit client.field names; wildcard projection is not supported')
+        self.metadata_input_fields = list(dict.fromkeys(self.metadata_input_fields))
+        if self.enrichment_mode == 'metadata' and (not isinstance(self.relevance_criteria, str) or not self.relevance_criteria.strip()):
+            raise ValueError('metadata.relevance_criteria is required in metadata mode; supply your personal relevance policy')
         self.miniflux_webhook_secret = self.get_config_value('miniflux', 'webhook_secret', None)
         self.miniflux_schedule_interval = self.get_config_value('miniflux', 'schedule_interval', None)
         if self.miniflux_schedule_interval is not None:
@@ -180,6 +198,8 @@ class Config:
         self.feeds_status_schedule = self.get_config_value('feeds_status', 'schedule', '09:00')
 
         self.agents = self.c.get('agents', {})
+        if self.enrichment_mode == 'metadata' and 'summary' not in self.agents:
+            raise ValueError('metadata mode requires agents.summary for article selection')
 
     def get_config_value(self, section, key, default=None):
         return typed_value((self.c.get(section) or {}).get(key, default), default)

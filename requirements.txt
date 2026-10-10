@@ -1,4 +1,5 @@
 miniflux
+requests
 openai
 markdownify
 markdown
