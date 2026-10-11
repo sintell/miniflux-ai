@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from core.process_entries import process_entry
-from services.article_source import ArticleSourceError, DEFAULTS, feed_text_length, linked_source
+from services.article_source import DEFAULTS, feed_text_length, linked_source
 from services.editorial import ARTICLE_PROMPT
 from services.enrichment import generation_input
 from services.miniflux_client import Client, MetadataAPIError
@@ -48,14 +48,41 @@ class ArticleSourceTests(unittest.TestCase):
         self.client.fetch_entry_content.assert_called_once_with(123, timeout=30, retries=1, max_bytes=2097152)
         self.client.get_feed.assert_not_called()  # No copying rule/cookie/password config.
 
-    def test_always_fetches_and_empty_or_original_wrapper_preview_is_rejected(self):
+    def test_always_fetches_and_short_preview_uses_limited_context(self):
         self.config.article_fetch['mode'] = 'always'
         linked_source(self.client, self.entry | {'content': ARTICLE * 3}, self.config)
         self.assertEqual(self.client.fetch_entry_content.call_count, 1)
         for content in ('', STUB, '<p>Short</p>'):
             self.client.fetch_entry_content.return_value = {'content': content}
-            with self.subTest(content=content), self.assertRaises(ArticleSourceError):
-                linked_source(self.client, self.entry, self.config)
+            with self.subTest(content=content):
+                source = linked_source(self.client, self.entry, self.config)
+                self.assertEqual(source['kind'], 'limited_context')
+                self.assertEqual(source['reason'], 'insufficient_article_text')
+                if content == '<p>Short</p>':
+                    self.assertEqual(source['content'], 'Short')
+
+    def test_retrieval_failures_fall_back_but_api_contract_and_access_errors_do_not(self):
+        for category in ('transport', 'temporary', 'response_too_large'):
+            with self.subTest(category=category):
+                self.client.fetch_entry_content.side_effect = MetadataAPIError('fetch_content', category=category)
+                source = linked_source(self.client, self.entry, self.config)
+                self.assertEqual(source['kind'], 'limited_context')
+                self.assertEqual(source['reason'], category)
+        for category in ('authentication', 'access', 'entry_not_found', 'invalid_response', 'unexpected_response'):
+            with self.subTest(category=category):
+                self.client.fetch_entry_content.side_effect = MetadataAPIError('fetch_content', category=category)
+                with self.assertRaises(MetadataAPIError):
+                    linked_source(self.client, self.entry, self.config)
+
+    def test_feed_only_input_includes_title_url_and_feed_identity(self):
+        self.entry['content'] = ''
+        self.entry['feed'] = {'title': 'News', 'site_url': 'https://example.com'}
+        request = json.loads(generation_input(self.entry, self.config))
+        self.assertEqual(request['title'], 'Fixture')
+        self.assertEqual(request['url'], self.entry['url'])
+        self.assertEqual(request['feed']['title'], 'News')
+        self.assertEqual(request['feed']['site_url'], 'https://example.com')
+        self.assertEqual(request['content'], '')
 
     def test_limits_and_source_provenance_do_not_mutate_entry(self):
         self.config.article_fetch['max_text_chars'] = 220
@@ -158,8 +185,8 @@ class ArticleProcessingTests(unittest.TestCase):
         self.assertEqual((record['entry_id'], record['feed_id'], record['url']), (123, 4, self.entry['url']))
         self.assertEqual(record['summary'], 'A substantive article summary.')
 
-    def test_fetch_failure_avoids_llm_and_completion(self):
-        self.client.fetch_entry_content.side_effect = MetadataAPIError('fetch_content', 500, entry_id=123)
+    def test_authentication_failure_avoids_llm_and_completion(self):
+        self.client.fetch_entry_content.side_effect = MetadataAPIError('fetch_content', 401, entry_id=123)
         with patch('core.process_entries.get_ai_result') as llm, self.assertLogs('miniflux_ai', 'ERROR') as logs:
             with self.assertRaises(MetadataAPIError):
                 process_entry(self.client, self.entry, self.config)
@@ -170,12 +197,31 @@ class ArticleProcessingTests(unittest.TestCase):
         self.assertEqual(State(self.config.state_path).queued(), [])
         self.assertIsNone(State(self.config.state_path).get_enrichment(123))
 
-    def test_empty_source_stops_generation(self):
-        self.client.fetch_entry_content.return_value = {'content': STUB}
-        with patch('core.process_entries.get_ai_result') as llm, self.assertRaises(ArticleSourceError):
-            process_entry(self.client, self.entry, self.config)
-        llm.assert_not_called()
-        self.client.patch_metadata.assert_not_called()
+    def test_limited_sources_still_generate_and_persist_rating(self):
+        for entry_id, preview in enumerate(('', STUB, '<p>Yandex Cloud</p>', None), start=200):
+            with self.subTest(preview=preview):
+                entry = copy.deepcopy(self.entry)
+                entry['id'] = entry_id
+                entry['title'] = '3rd Yandex Cloud Data Center Was Hit'
+                self.client.get_entry.return_value = entry
+                self.client.fetch_entry_content.side_effect = (
+                    MetadataAPIError('fetch_content', 500, entry_id=entry['id']) if preview is None else None)
+                self.client.fetch_entry_content.return_value = {'content': preview}
+                with patch('core.process_entries.get_ai_result', return_value=self.raw) as llm:
+                    process_entry(self.client, entry, self.config)
+                request = json.loads(llm.call_args.args[1])
+                self.assertEqual(request['source']['kind'], 'limited_context')
+                self.assertEqual(request['source']['reason'], 'temporary' if preview is None else 'insufficient_article_text')
+                self.assertEqual(request['title'], entry['title'])
+                self.assertEqual(request['url'], entry['url'])
+                self.assertIn('Article URL', request['feed_content'])
+                if preview == '<p>Yandex Cloud</p>':
+                    self.assertEqual(request['content'], 'Yandex Cloud')
+                saved = State(self.config.state_path).get_enrichment(entry['id'])
+                self.assertEqual(saved['status'], 'complete')
+                self.assertEqual(saved['values']['rating'], '8.5')
+                self.client.patch_metadata.assert_called_with(entry['id'], saved['values'])
+                self.client.update_entry.assert_not_called()
 
     def test_saved_retry_and_completed_article_avoid_fetch_and_regeneration(self):
         self.client.patch_metadata.side_effect = OSError

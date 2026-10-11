@@ -30,6 +30,16 @@ article. Retrieval is performed by Miniflux: do not claim to have browsed
 or invent facts from unsupplied pages. When source.truncated is true, the supplied
 article is an excerpt; limit claims to the supplied evidence. Classify personal
 relevance using the policy, not article length or availability alone.
+When source.kind is limited_context, original-article retrieval was unavailable
+or insufficient; source.reason describes the limitation. Always assign a rating
+using the supplied title, URL, feed identity, any short retrieved text, and
+feed_content as context. The same applies to missing or sparse feed-only content.
+Missing article text is not evidence of low personal relevance. Apply any
+high-priority event baseline in the personal policy when supported by the available
+context; otherwise give the best-supported provisional score. Do not invent event
+details, infer confirmed impact from an ambiguous headline, or use popularity
+counters as evidence of significance or credibility. Keep the summary brief and
+explicitly acknowledge limited source evidence when using limited context.
 Personal relevance policy:
 '''
 
@@ -73,10 +83,15 @@ def generation_input(entry, config, source=None):
     feed_content = markdownify(entry.get('content', ''))
     content = source['content'] if source else feed_content
     source_details = {key: source[key] for key in ('kind', 'url', 'truncated')} if source else {'kind': 'feed', 'truncated': False}
+    if source and 'reason' in source:
+        source_details['reason'] = source['reason']
     if config.llm_max_length:
         source_details['truncated'] = source_details['truncated'] or len(content) > config.llm_max_length
         content = content[:config.llm_max_length]
-    value = {'title': entry.get('title', ''), 'content': content, 'source': source_details,
+    feed = entry.get('feed') or {}
+    value = {'title': entry.get('title', ''), 'url': entry.get('url', ''),
+             'feed': {field: feed.get(field, '') for field in ('title', 'site_url', 'feed_url')},
+             'content': content, 'source': source_details,
              'tags': topic_labels(entry.get('tags') or []),
              'meta': {field: entry.get('meta', {})[field] for field in config.metadata_input_fields
                       if field in entry.get('meta', {})}}

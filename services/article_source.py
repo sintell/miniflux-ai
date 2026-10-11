@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 from common.logger import logger
-from services.editorial import GenerationError
+from services.miniflux_client import MetadataAPIError
 
 
 DEFAULTS = {'mode': 'thin', 'min_feed_chars': 500, 'min_article_chars': 200,
@@ -13,11 +13,12 @@ DEFAULTS = {'mode': 'thin', 'min_feed_chars': 500, 'min_article_chars': 200,
             'retries': 1}
 
 
-class ArticleSourceError(GenerationError):
-    def __init__(self, category):
-        self.category = category
-        super().__init__(f'operation=fetch_article category={category}. '
-                         'No enrichment was generated; inspect the feed scraper/rewrite rules or article_fetch settings.')
+def limited_source(entry, settings, reason, content=''):
+    text = markdownify(content).strip()
+    limit = settings['max_text_chars']
+    logger.info('operation=fetch_article entry_id=%s source=limited_context reason=%s', entry['id'], reason)
+    return {'kind': 'limited_context', 'url': entry.get('url', ''),
+            'content': text[:limit], 'truncated': len(text) > limit, 'reason': reason}
 
 
 def feed_text_length(content):
@@ -42,13 +43,18 @@ def linked_source(client, entry, config):
     # The server loads the owning feed/user and runs the same scraper, URL/content
     # rewrite rules, HTTP settings and sanitizer as its Fetch original content action.
     # Passing false explicitly is essential: true would mutate stored publisher fields.
-    preview = client.fetch_entry_content(entry['id'], timeout=settings['timeout'],
-                                         retries=settings['retries'], max_bytes=settings['max_bytes'])
+    try:
+        preview = client.fetch_entry_content(entry['id'], timeout=settings['timeout'],
+                                             retries=settings['retries'], max_bytes=settings['max_bytes'])
+    except MetadataAPIError as exc:
+        if exc.operation != 'fetch_content' or exc.category not in {'transport', 'temporary', 'response_too_large'}:
+            raise
+        return limited_source(entry, settings, exc.category)
     content = preview['content']
     if feed_text_length(content) < settings['min_article_chars']:
         # Miniflux can return original content if its scraper extracted nothing.
         # Do not treat a wrapper-only preview as successful article retrieval.
-        raise ArticleSourceError('insufficient_article_text')
+        return limited_source(entry, settings, 'insufficient_article_text', content)
     text = markdownify(content).strip()
     limit = settings['max_text_chars']
     logger.info('operation=fetch_article entry_id=%s http_status=200 source=miniflux_article text_chars=%d truncated=%s',
