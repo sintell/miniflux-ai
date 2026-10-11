@@ -10,6 +10,13 @@ from services.editorial import GenerationError, expand_prompt
 RATING = re.compile(r'(?:[1-9]\.[0-9]|10\.0)\Z')
 CONTRACT = '''Return JSON only, with exactly these keys:
 {"summary":"article summary", "rating":"8.5", "topics":["topic label"]}
+For the summary string, preserve the article brief's overview and concise bullets,
+but use plain-text formatting for the metadata display: start each bullet with
+"• Topic label: explanation" and separate bullets and the overview with blank lines.
+Use plain topic labels, not Markdown bold. For simple articles keep short paragraphs.
+Encode line breaks as \\n in the JSON string. Do not use HTML, Markdown markers,
+headings, links or code fences in the summary. These formatting rules override the
+article brief's Markdown formatting request.
 Rating is personal relevance according to the policy below, not a factual quality score.
 Return rating as a string from 1.0 to 10.0, with exactly one decimal place.
 Use native publisher tags first as classification input. When tags are absent, infer

@@ -4,7 +4,7 @@ from common.config import Config
 from common.logger import logger
 from core.entry_filter import filter_entry
 from core.get_ai_result import get_ai_result
-from services.editorial import expand_prompt, GenerationError
+from services.editorial import expand_prompt, GenerationError, render_summary
 from services.enrichment import enrichment_prompt, generation_input, validate_enrichment
 from services.miniflux_client import MetadataAPIError, OUTPUT_FIELDS
 from services.state import State
@@ -41,8 +41,11 @@ def process_entry(miniflux_client, entry, config=None):
                         'site_url': feed.get('site_url', ''),
                     })
                 title = html.escape(agent.get('title', 'AI summary:'))
-                paragraphs = '</p><p>'.join(html.escape(response).split('\n\n'))
-                block = f'<p><strong>{title}</strong> {paragraphs}</p>'
+                if name == 'summary':
+                    block = f'<p><strong>{title}</strong></p>' + render_summary(response)
+                else:
+                    paragraphs = '</p><p>'.join(html.escape(response).split('\n\n'))
+                    block = f'<p><strong>{title}</strong> {paragraphs}</p>'
                 blocks.append(f'<blockquote>{block}</blockquote>' if agent.get('style_block') else block)
             except Exception:
                 logger.exception('Error processing entry %s with agent %s', entry['id'], name)

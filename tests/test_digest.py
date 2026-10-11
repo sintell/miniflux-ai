@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 from core.generate_daily_news import generate_daily_news, refresh_pending
 from core.get_ai_result import build_messages, get_ai_result, RequestBudget
 from core.process_entries import process_entry
-from services.editorial import ARTICLE_PROMPT, DIGEST_PROMPT, canonical_url, expand_prompt, render_digest, safe_url, validate_digest
+from services.editorial import ARTICLE_PROMPT, DIGEST_PROMPT, canonical_url, expand_prompt, render_digest, render_summary, safe_url, validate_digest
 from services.rss import render_feed
 from services.state import State
 from services.llm_diagnostics import LLMError
@@ -294,7 +294,8 @@ class DigestTests(unittest.TestCase):
                                               'url': 'https://example.com', 'feed': {'id': 4, 'site_url': 'https://example.com',
                                                                                    'title': 'Source', 'category': {'title': 'Tech'}}}
         self.client.update_entry.side_effect = OSError
-        with patch('core.process_entries.get_ai_result', return_value='An English summary.') as llm:
+        summary = 'An English overview.\n\n- **Tools:** New capabilities.\n- **Pricing:** Lower costs.'
+        with patch('core.process_entries.get_ai_result', return_value=summary) as llm:
             with self.assertRaises(OSError):
                 process_entry(self.client, self.client.get_entry.return_value, self.config)
             self.client.update_entry.side_effect = None
@@ -302,7 +303,25 @@ class DigestTests(unittest.TestCase):
             self.assertEqual(llm.call_count, 1)
             self.assertIn('80–130 words', llm.call_args.args[0])
         self.assertEqual(self.state.queued()[0]['feed_id'], 4)
+        self.assertEqual(self.state.queued()[0]['summary'], summary)
+        content = self.client.update_entry.call_args.kwargs['content']
+        self.assertIn('<ul>', content)
+        self.assertIn('<strong>Tools:</strong>', content)
+        self.assertTrue(content.endswith('Русский текст'))
         self.assertEqual(len(self.state.queued()), 1)
+
+    def test_summary_rendering_escapes_html_and_removes_link_attributes(self):
+        rendered = render_summary('Overview <script>alert(1)</script> & caveats.\n\n'
+                                  '- **Tools:** [click](javascript:alert(1))\n'
+                                  '- ![tracking](https://example.com/pixel)')
+        self.assertIn('&lt;script&gt;', rendered)
+        self.assertIn('&amp; caveats', rendered)
+        self.assertIn('<strong>Tools:</strong>', rendered)
+        self.assertNotIn('<script', rendered)
+        self.assertNotIn('href=', rendered)
+        self.assertNotIn('<img', rendered)
+        self.assertEqual(render_summary('Old summary.\n\nAnother paragraph.'),
+                         '<p>Old summary.</p>\n<p>Another paragraph.</p>')
 
     def test_legacy_import_is_idempotent_and_preserves_originals(self):
         queue = Path(self.temp.name) / 'entries.json'
