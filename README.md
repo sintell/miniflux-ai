@@ -72,6 +72,9 @@ container environment; do not commit real credentials.
 - **AI News**: Language, timezone, schedule, editorial limits, prompts and optional weather.
 - **Agents**: Define prompts and allow/deny filters; `style_block` wraps generated
   text in a blockquote. The summary agent uses `ai_news.prompts.article`.
+  Summaries use a short overview and concise topic bullets, or short paragraphs for
+  simple articles. Legacy summaries render basic Markdown, including bold labels;
+  metadata summaries use spaced plain-text bullets supported by the Miniflux display.
 
 
 ## Docker Setup

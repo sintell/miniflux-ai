@@ -57,6 +57,14 @@ content injection. `ai_news.prompts.article` still controls the summary brief;
 the producer appends its strict JSON/rating/topics contract. The process-wide
 language policy and LLM concurrency/RPM/retry budgets still apply.
 
+New summaries use a short overview followed by concise topic bullets when useful,
+or short paragraphs for simple articles. Metadata summaries contain plain-text
+`• Topic: explanation` bullets separated by blank lines, with JSON-escaped newlines.
+The fork's content metadata display preserves those line breaks; Markdown bold and
+list syntax are not required. The producer's JSON contract overrides Markdown
+formatting requests in the article prompt for this display. Existing saved summaries
+are not automatically reformatted or regenerated.
+
 ## Rule-aware article text for thin feeds
 
 Metadata enrichment retrieves original-article content before generation when
