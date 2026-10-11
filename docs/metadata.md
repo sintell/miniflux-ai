@@ -115,9 +115,14 @@ by Miniflux. The companion bounds the preview API timeout, decoded JSON response
 size and extracted-text budget, and retries transport/429/5xx failures according
 to its bounded API policy. It does not crawl references/comments or add browser,
 JavaScript or PDF processing capabilities beyond Miniflux's existing scraper.
-An error or insufficient preview text prevents generation and completion/digest
-enqueue. This also catches the server returning the original thin content after
-an empty extraction. Unread entries remain eligible for a later ordinary poll.
+Insufficient preview text (including a wrapper returned after empty extraction),
+exhausted transport/429/5xx failures, or an oversized preview triggers limited-context
+enrichment instead. The AI receives the title, entry URL, feed identity, compact
+feed content, any short preview text, and an explicit retrieval limitation. It must
+still assign a relevance rating according to the personal policy without penalizing
+missing content alone, and keep its summary brief and clear about limited evidence.
+Authentication, access, missing-entry and invalid API response errors still prevent
+generation; metadata readiness and write failures retain their existing handling.
 
 Generation receives preview text as primary `content`, `source.kind:
 miniflux_article` with the native entry URL/truncation flag, and compact original
