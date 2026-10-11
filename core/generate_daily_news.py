@@ -83,6 +83,9 @@ def generate_daily_news(miniflux_client, config=None, *, now=None, llm=None, wea
             response_chars = len(raw) if isinstance(raw, str) else 0
             stage = 'validation'
             result = validate_digest(raw, selected, config.editorial)
+            if len(result['stories']) > config.editorial['max_stories']:
+                logger.warning('LLM returned %d stories; max_stories=%d; publishing all validated stories',
+                               len(result['stories']), config.editorial['max_stories'])
             if weather and time.monotonic() - generation_started > config.weather['max_age_minutes'] * 60:
                 # Discard the weather-bearing opening without blocking publication or another LLM call.
                 result['opening'] = result['title']

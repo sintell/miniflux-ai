@@ -141,8 +141,6 @@ def validate_digest(raw, records, editorial):
         raise GenerationError('Digest stories must be a list')
     if not stories:
         raise GenerationError('LLM returned no stories; empty editions are not published')
-    if len(stories) > editorial['max_stories']:
-        raise GenerationError(f"LLM returned {len(stories)} stories; max_stories={editorial['max_stories']}")
     known = {r["record_id"] for r in records}
     seen = set()
     groups = set()

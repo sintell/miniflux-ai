@@ -82,6 +82,23 @@ class DigestTests(unittest.TestCase):
             self.assertEqual(self.state.queued(), [record])
             self.assertEqual(self.state.digests(), [])
 
+    def test_extra_stories_are_published_without_truncation_or_retry(self):
+        records = [self.queue(115 + index) for index in range(9)]
+        stories = [{'headline': f'Story {index}', 'body': 'Specific development.',
+                    'source_ids': [record['record_id']], 'group': ''}
+                   for index, record in enumerate(records)]
+        llm = Mock(return_value=output([], stories=stories))
+        with self.assertLogs('miniflux_ai', level='WARNING') as logs:
+            digest = self.generate(llm)
+        self.assertIn('LLM returned 9 stories; max_stories=8; publishing all validated stories',
+                      '\n'.join(logs.output))
+        self.assertEqual(digest['result']['stories'], stories)
+        self.assertEqual(digest['html'].count('<h4>'), 9)
+        self.assertEqual(len(self.state.digests()), 1)
+        self.assertEqual(self.state.queued(), [])
+        self.client.refresh_feed.assert_called_once_with(3)
+        llm.assert_called_once()
+
     def test_generation_and_storage_failure_preserve_queue(self):
         record = self.queue()
         self.assertIsNone(self.generate(Mock(side_effect=TimeoutError)))
@@ -253,15 +270,13 @@ class DigestTests(unittest.TestCase):
         self.assertIn('Auf einen Blick', rendered)
         self.assertNotIn('At a glance', rendered)
 
-    def test_group_and_story_limits_and_duplicate_coverage_are_validated(self):
+    def test_group_limits_and_duplicate_coverage_are_validated(self):
         record = self.queue()
         value = json.loads(output([record['record_id']]))
         value['stories'][0]['group'] = 'Technology'
         with self.assertRaises(ValueError):
             validate_digest(json.dumps(value), [record], EDITORIAL | {'max_groups': 0})
         value['stories'].append(value['stories'][0].copy())
-        with self.assertRaises(ValueError):
-            validate_digest(json.dumps(value), [record], EDITORIAL | {'max_stories': 1})
         with self.assertRaises(ValueError):
             validate_digest(json.dumps(value), [record], EDITORIAL)
 

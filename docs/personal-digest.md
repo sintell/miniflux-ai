@@ -25,7 +25,7 @@ Under `ai_news.editorial`:
 | Setting | Default | Meaning |
 |---|---:|---|
 | `at_a_glance_words` | 75 | Approximate executive-summary word target |
-| `max_stories` | 8 | Validated maximum number of distinct stories |
+| `max_stories` | 8 | Prompt target for maximum distinct stories; valid excess stories are published with a warning |
 | `max_groups` | 3 | Maximum topic groups; 0 disables groups |
 | `story_words_min` / `story_words_max` | 40 / 70 | Approximate story length; shorter for thin sources |
 | `article_words_min` / `article_words_max` | 80 / 130 | Intermediate summary target |
