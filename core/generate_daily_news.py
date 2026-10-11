@@ -8,7 +8,7 @@ from common.logger import logger
 from core.get_ai_result import get_ai_result
 from services.editorial import GenerationError, canonical_url, expand_prompt, render_digest, validate_digest
 from services.state import State
-from services.weather import edition_context, fetch_weather
+from services.weather import WeatherError, edition_context, fetch_weather
 
 
 def refresh_pending(miniflux_client, config=None, state=None):
@@ -57,8 +57,10 @@ def generate_daily_news(miniflux_client, config=None, *, now=None, llm=None, wea
             context = edition_context(instant, config.timezone, config.editions)
             try:
                 weather = weather_fetcher(config.weather, config.timezone, instant, context['edition'])
-            except Exception:
-                logger.warning('Weather unavailable; generating news-only opening')
+            except Exception as exc:
+                reason = str(exc) if isinstance(exc, WeatherError) else 'Exception details withheld'
+                logger.warning('Weather unavailable; generating news-only opening: error=%s reason=%s',
+                               type(exc).__name__, reason)
                 weather = None
             # Bound whole records, never slice serialized JSON or silently drop metadata.
             stage = 'input'

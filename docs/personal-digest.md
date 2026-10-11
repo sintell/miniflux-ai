@@ -111,7 +111,11 @@ Weather is optional and disabled by default. Configure these under `ai_news.weat
 - `location`: human-readable display name. It is a label, **not a geocoding query**.
 - `latitude`, `longitude`: actual forecast coordinates.
 - `units`: `metric` (°C, km/h) or `imperial` (°F, mph).
-- `timeout`: network timeout in seconds, default 5, maximum 30.
+- `timeout`: per-attempt network timeout in seconds, default 5, maximum 30.
+  Transient network errors, HTTP 429 and HTTP 5xx are retried up to three attempts,
+  with short exponential backoff (or `Retry-After`). Attempts and waits share a total
+  budget of twice this timeout; each attempt is clipped to the remaining budget.
+  A `Retry-After` that exceeds the remaining budget ends collection immediately.
 - `max_age_minutes`: maximum elapsed generation time using that fetched forecast,
   default 30. If exceeded, discard the weather-bearing opening and use the localized
   news-only title as the opening; publish the news without another LLM request.
@@ -137,7 +141,11 @@ The LLM may creatively style the opening using this context—for example, a col
 and rainy **forecast** can inspire a playful news introduction. It must not portray
 forecasts as observations or invent weather when none was supplied. Data is fetched
 directly from [Open-Meteo](https://open-meteo.com/), with a bounded response size and
-coverage/unit checks. Fetch timestamps are retained separately from forecast valid
+coverage/unit checks. Hourly values and continuity are validated for the requested
+edition windows; missing values or gaps outside those windows do not discard usable
+weather. Failed collection logs the stage, safe reason, exception type, HTTP status,
+attempt count and elapsed time before falling back to a news-only opening.
+Fetch timestamps are retained separately from forecast valid
 times; the API does not provide a model-issuance timestamp here. There is no weather
 cache: unavailable/malformed/out-of-window data is omitted. Empty news queues never
 produce weather-only publications or invoke weather/LLM calls.

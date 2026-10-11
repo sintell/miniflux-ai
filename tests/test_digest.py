@@ -99,6 +99,24 @@ class DigestTests(unittest.TestCase):
         self.client.refresh_feed.assert_called_once_with(3)
         llm.assert_called_once()
 
+    def test_weather_failure_logs_safe_diagnostics_and_still_publishes(self):
+        from services.weather import WeatherError
+        record = self.queue()
+        for error, expected in (
+            (WeatherError('request', 'Request failed', 'HTTPError', 503, 3, 1.5),
+             'stage=request reason=Request failed error=HTTPError http_status=503 attempts=3'),
+            (ValueError('PRIVATE RESPONSE'), 'Exception details withheld'),
+        ):
+            with self.subTest(expected=expected), self.assertLogs('miniflux_ai', level='WARNING') as logs:
+                # Storage is mocked so both cases can use the same queued record.
+                with patch.object(State, 'publish'):
+                    digest = self.generate(Mock(return_value=output([record['record_id']])),
+                                           weather_fetcher=Mock(side_effect=error))
+            self.assertIsNotNone(digest)
+            self.assertIsNone(digest['weather'])
+            self.assertIn(expected, '\n'.join(logs.output))
+            self.assertNotIn('PRIVATE RESPONSE', '\n'.join(logs.output))
+
     def test_generation_and_storage_failure_preserve_queue(self):
         record = self.queue()
         self.assertIsNone(self.generate(Mock(side_effect=TimeoutError)))

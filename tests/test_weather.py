@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import json
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import unittest
 from urllib.parse import parse_qs, urlsplit
+from urllib.error import HTTPError, URLError
 from zoneinfo import ZoneInfo
 
-from services.weather import edition_context, fetch_weather, summarize_forecast
+from services.weather import WeatherError, edition_context, fetch_weather, summarize_forecast
 
 
 SETTINGS = {'enabled': True, 'location': 'Test city', 'latitude': 52, 'longitude': 13,
@@ -28,6 +29,118 @@ def fixture(now, zone='UTC', imperial=False):
 
 
 class WeatherTests(unittest.TestCase):
+    def weather_opener(self, now):
+        response = Mock()
+        response.read.return_value = json.dumps(fixture(now)).encode()
+        context = Mock()
+        context.__enter__ = Mock(return_value=response)
+        context.__exit__ = Mock(return_value=False)
+        return Mock(return_value=context)
+
+    def test_transient_network_and_http_failures_retry_then_succeed(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        for error in (TimeoutError('PRIVATE'), URLError('PRIVATE'),
+                      HTTPError('PRIVATE URL', 503, 'PRIVATE', {}, None),
+                      HTTPError('PRIVATE URL', 429, 'PRIVATE', {'Retry-After': '2'}, None)):
+            with self.subTest(error=type(error).__name__):
+                opener = self.weather_opener(now)
+                opener.side_effect = [error, opener.return_value]
+                with patch('services.weather.monotonic_time.sleep') as sleep:
+                    result = fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+                self.assertEqual(result['provider'], 'Open-Meteo')
+                self.assertEqual(opener.call_count, 2)
+                sleep.assert_called_once_with(2 if getattr(error, 'code', None) == 429 else 0.5)
+
+    def test_exhausted_retries_have_safe_diagnostics(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        opener = Mock(side_effect=URLError('PRIVATE NETWORK DETAILS'))
+        with patch('services.weather.monotonic_time.sleep') as sleep:
+            with self.assertRaises(WeatherError) as caught:
+                fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+        self.assertEqual(opener.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertIn('stage=request', str(caught.exception))
+        self.assertIn('attempts=3', str(caught.exception))
+        self.assertNotIn('PRIVATE', str(caught.exception))
+
+    def test_client_error_and_long_retry_after_do_not_retry(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        for status, headers in ((400, {}), (429, {'Retry-After': '60'})):
+            opener = Mock(side_effect=HTTPError('PRIVATE URL', status, 'PRIVATE', headers, None))
+            with patch('services.weather.monotonic_time.sleep') as sleep:
+                with self.assertRaises(WeatherError) as caught:
+                    fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+            opener.assert_called_once()
+            sleep.assert_not_called()
+            self.assertIn(f'http_status={status}', str(caught.exception))
+            self.assertNotIn('PRIVATE', str(caught.exception))
+
+    def test_retry_timeout_is_clipped_to_remaining_total_budget(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        opener = self.weather_opener(now)
+        opener.side_effect = [TimeoutError, opener.return_value]
+        with patch('services.weather.monotonic_time.monotonic', side_effect=[0, 0, 4, 7, 8]), \
+                patch('services.weather.monotonic_time.sleep'):
+            self.assertIsNotNone(fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener))
+        self.assertEqual([call.kwargs['timeout'] for call in opener.call_args_list], [5, 3])
+
+    def test_missing_values_and_gaps_outside_requested_window_are_ignored(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        data = fixture(now)
+        data['hourly']['temperature_2m'][30] = None
+        data['hourly']['wind_speed_10m'] = data['hourly']['wind_speed_10m'][:24]
+        for values in data['hourly'].values():
+            del values[2]
+        result = summarize_forecast(data, SETTINGS, 'UTC', now, 'morning')
+        self.assertEqual(result['daily']['high'], 23)
+
+    def test_fetch_time_budget_expiration_stops_retrying(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        opener = Mock(side_effect=TimeoutError('PRIVATE'))
+        with patch('services.weather.monotonic_time.monotonic', side_effect=[0, 0, 10]), \
+                patch('services.weather.monotonic_time.sleep') as sleep:
+            with self.assertRaises(WeatherError) as caught:
+                fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+        opener.assert_called_once()
+        sleep.assert_not_called()
+        self.assertIn('remaining time budget', str(caught.exception))
+
+    def test_retry_after_http_date_is_respected(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        opener = self.weather_opener(now)
+        opener.side_effect = [HTTPError('PRIVATE', 429, 'PRIVATE',
+                                       {'Retry-After': 'Sat, 10 Oct 2026 07:30:02 GMT'}, None),
+                              opener.return_value]
+        with patch('services.weather.datetime') as clock, \
+                patch('services.weather.monotonic_time.sleep') as sleep:
+            clock.now.return_value = now
+            clock.fromtimestamp = datetime.fromtimestamp
+            clock.combine = datetime.combine
+            fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+        sleep.assert_called_once_with(2)
+
+    def test_gap_in_requested_window_is_rejected(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        data = fixture(now)
+        for values in data['hourly'].values():
+            del values[10]
+        with self.assertRaisesRegex(ValueError, 'consecutive hourly'):
+            summarize_forecast(data, SETTINGS, 'UTC', now, 'morning')
+
+    def test_malformed_and_invalid_forecasts_do_not_retry(self):
+        now = datetime(2026, 10, 10, 7, 30, tzinfo=timezone.utc)
+        data = fixture(now)
+        data['hourly']['temperature_2m'][10] = None
+        for raw, expected in ((b'PRIVATE INVALID JSON', 'stage=json'),
+                              (json.dumps(data).encode(), 'Missing or invalid temperature_2m in requested window')):
+            opener = self.weather_opener(now)
+            opener.return_value.__enter__.return_value.read.return_value = raw
+            with self.assertRaises(WeatherError) as caught:
+                fetch_weather(SETTINGS, 'UTC', now, 'morning', opener=opener)
+            opener.assert_called_once()
+            self.assertIn(expected, str(caught.exception))
+            self.assertNotIn('PRIVATE', str(caught.exception))
+
     def test_editions_and_dates_use_configured_timezone(self):
         for hour, expected in ((4, 'night'), (5, 'morning'), (12, 'evening'), (21, 'night')):
             now = datetime(2026, 10, 10, hour, tzinfo=timezone.utc)

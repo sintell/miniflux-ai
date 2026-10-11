@@ -1,11 +1,25 @@
 """Optional Open-Meteo forecasts, selected into explicit local-time windows."""
 from datetime import datetime, time, timedelta, timezone
+from email.utils import parsedate_to_datetime
 import json
 import math
 import time as monotonic_time
 from urllib.parse import urlencode
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
+
+
+class ForecastError(ValueError):
+    """Controlled validation reasons, containing no provider response text."""
+
+
+class WeatherError(ValueError):
+    """Safe diagnostic for the news-only fallback."""
+
+    def __init__(self, stage, reason, error, status, attempts, elapsed):
+        super().__init__(f'stage={stage} reason={reason} error={error} '
+                         f'http_status={status} attempts={attempts} elapsed_seconds={elapsed:.2f}')
 
 
 def edition_context(now, timezone_name, boundaries):
@@ -23,7 +37,7 @@ def edition_context(now, timezone_name, boundaries):
 
 def _number(value):
     if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value):
-        raise ValueError('Missing or invalid forecast value')
+        raise ForecastError('Missing or invalid forecast value')
     return value
 
 
@@ -42,7 +56,7 @@ def _conditions(code):
         return 'snow'
     if code in (95, 96, 99):
         return 'thunderstorms'
-    raise ValueError('Unknown forecast weather code')
+    raise ForecastError('Unknown forecast weather code')
 
 
 def summarize_forecast(data, settings, timezone_name, now, edition):
@@ -51,17 +65,11 @@ def summarize_forecast(data, settings, timezone_name, now, edition):
     hourly = data['hourly']
     fields = ('temperature_2m', 'precipitation_probability', 'wind_speed_10m', 'weather_code')
     times = hourly['time']
-    if not times or any(len(hourly[field]) != len(times) for field in fields):
-        raise ValueError('Incomplete hourly forecast')
-    rows = []
-    for index, epoch in enumerate(times):
-        row = {field: _number(hourly[field][index]) for field in fields}
-        row['time'] = datetime.fromtimestamp(_number(epoch), zone)
-        if not 0 <= row['precipitation_probability'] <= 100 or row['wind_speed_10m'] < 0:
-            raise ValueError('Invalid weather range')
-        rows.append(row)
-    if any(b['time'].timestamp() - a['time'].timestamp() != 3600 for a, b in zip(rows, rows[1:])):
-        raise ValueError('Forecast must contain consecutive hourly values')
+    if not isinstance(times, list) or not times:
+        raise ForecastError('Incomplete hourly forecast')
+    for field in fields:
+        if not isinstance(hourly.get(field), list):
+            raise ForecastError(f'Missing hourly {field} array')
 
     midnight = datetime.combine(local.date() + timedelta(days=1), time(), zone)
     start = local
@@ -79,11 +87,27 @@ def summarize_forecast(data, settings, timezone_name, now, edition):
                    ('next_morning', morning.replace(hour=6), morning.replace(hour=12))]
         daily_date = morning.date()
 
+    rows = []
+    for index, epoch in enumerate(times):
+        epoch = _number(epoch)
+        if not any(epoch + 3600 > begin.timestamp() and epoch < end.timestamp()
+                   for _, begin, end in windows):
+            continue
+        row = {'time': datetime.fromtimestamp(epoch, zone)}
+        for field in fields:
+            try:
+                row[field] = _number(hourly[field][index])
+            except (ForecastError, IndexError):
+                raise ForecastError(f'Missing or invalid {field} in requested window') from None
+        if not 0 <= row['precipitation_probability'] <= 100 or row['wind_speed_10m'] < 0:
+            raise ForecastError('Invalid weather range in requested window')
+        rows.append(row)
+
     imperial = settings['units'] == 'imperial'
     temperature_unit, wind_unit = ('°F', 'mph') if imperial else ('°C', 'km/h')
     expected_temp = '°F' if imperial else '°C'
     if data['hourly_units']['temperature_2m'] != expected_temp or data['hourly_units']['wind_speed_10m'] != wind_unit:
-        raise ValueError('Unexpected forecast units')
+        raise ForecastError('Unexpected forecast units')
     wind_threshold = settings['notable_wind_kmh'] / 1.609344 if imperial else settings['notable_wind_kmh']
     result = {'provider': 'Open-Meteo', 'kind': 'forecast, not observation',
               'location': settings['location'], 'timezone': timezone_name,
@@ -92,7 +116,10 @@ def summarize_forecast(data, settings, timezone_name, now, edition):
         selected = [row for row in rows if row['time'].timestamp() + 3600 > begin.timestamp()
                     and row['time'].timestamp() < end.timestamp()]
         if not selected or selected[0]['time'].timestamp() > begin.timestamp() or selected[-1]['time'].timestamp() + 3600 < end.timestamp():
-            raise ValueError('Forecast does not cover the requested window')
+            raise ForecastError('Forecast does not cover the requested window')
+        if any(b['time'].timestamp() - a['time'].timestamp() != 3600
+               for a, b in zip(selected, selected[1:])):
+            raise ForecastError('Requested window must contain consecutive hourly values')
         rainy = [row for row in selected if row['precipitation_probability'] >= settings['rain_probability_threshold']]
         # Compact contiguous precipitation windows, retaining their maximum probability.
         rain_windows = []
@@ -119,11 +146,27 @@ def summarize_forecast(data, settings, timezone_name, now, edition):
     daily_index = next((i for i, epoch in enumerate(daily['time'])
                         if datetime.fromtimestamp(epoch, zone).date() == daily_date), None)
     if daily_index is None or data['daily_units']['temperature_2m_max'] != expected_temp or data['daily_units']['temperature_2m_min'] != expected_temp:
-        raise ValueError('Missing daily forecast or wrong units')
+        raise ForecastError('Missing daily forecast or wrong units')
     result['daily'] = {'date': daily_date.isoformat(),
                        'high': _number(daily['temperature_2m_max'][daily_index]),
                        'low': _number(daily['temperature_2m_min'][daily_index])}
     return result
+
+
+def _retry_delay(headers, attempt):
+    value = headers.get('Retry-After') if headers else None
+    if value:
+        try:
+            seconds = float(value)
+            if math.isfinite(seconds) and seconds >= 0:
+                return seconds
+        except ValueError:
+            pass
+        try:
+            return max(0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return 0.5 * 2 ** (attempt - 1)
 
 
 def fetch_weather(settings, timezone_name, now, edition, *, opener=urlopen):
@@ -139,12 +182,48 @@ def fetch_weather(settings, timezone_name, now, edition, *, opener=urlopen):
         'timezone': timezone_name, 'timeformat': 'unixtime',
     })
     started = monotonic_time.monotonic()
-    # No cache: failure or incomplete/stale coverage simply omits weather upstream.
-    with opener('https://api.open-meteo.com/v1/forecast?' + query, timeout=settings['timeout']) as response:
-        raw = response.read(1024 * 1024 + 1)
-    if len(raw) > 1024 * 1024 or monotonic_time.monotonic() - started > settings['timeout']:
-        raise ValueError('Forecast response exceeded size/time budget')
-    result = summarize_forecast(json.loads(raw), settings, timezone_name, now, edition)
+    # Three attempts at most, sharing a budget of twice the per-attempt timeout.
+    deadline = started + settings['timeout'] * 2
+    for attempt in range(1, 4):
+        stage, reason, status = 'request', 'Request failed', None
+        retryable, headers = False, None
+        try:
+            remaining = deadline - monotonic_time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            with opener('https://api.open-meteo.com/v1/forecast?' + query,
+                        timeout=min(settings['timeout'], remaining)) as response:
+                raw = response.read(1024 * 1024 + 1)
+            stage = 'response'
+            if monotonic_time.monotonic() >= deadline:
+                reason = 'Forecast fetch exceeded total time budget'
+                raise TimeoutError
+            if len(raw) > 1024 * 1024:
+                raise ForecastError('Forecast response exceeded size budget')
+            stage = 'json'
+            data = json.loads(raw)
+            stage = 'validation'
+            result = summarize_forecast(data, settings, timezone_name, now, edition)
+            break
+        except HTTPError as exc:
+            status = exc.code
+            retryable = status == 429 or 500 <= status <= 599
+            headers = exc.headers
+            exc.close()
+            error = type(exc).__name__
+        except (URLError, OSError) as exc:
+            retryable = True
+            error = type(exc).__name__
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, ForecastError) else 'Invalid forecast response'
+            error = type(exc).__name__
+        elapsed = monotonic_time.monotonic() - started
+        delay = _retry_delay(headers, attempt)
+        if retryable and elapsed + delay >= settings['timeout'] * 2:
+            reason = 'Retry wait or request exceeded remaining time budget'
+        if not retryable or attempt == 3 or elapsed + delay >= settings['timeout'] * 2:
+            raise WeatherError(stage, reason, error, status, attempt, elapsed) from None
+        monotonic_time.sleep(delay)
     result['fetched_at'] = now.isoformat()
     result['freshness_note'] = 'Fetch time, not model issuance time; Open-Meteo provides no issuance timestamp here.'
     return result
